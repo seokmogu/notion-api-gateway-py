@@ -58,9 +58,9 @@ async def run_doctor() -> None:
 
     # 5. Configuration
     try:
-        from notion_gateway.config import AppConfig
+        from notion_gateway.config import get_config
 
-        cfg = AppConfig()  # type: ignore[call-arg]
+        cfg = get_config()
         _ok(f"NOTION_TOKEN configured ({cfg.notion_token[:8]}...)")
         _ok(f"NOTION_REQUESTS_DATABASE_ID configured ({cfg.notion_requests_database_id[:8]}...)")
 

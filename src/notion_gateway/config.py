@@ -1,19 +1,42 @@
-"""Application configuration via environment variables with Pydantic validation."""
+"""Application configuration via environment variables with Pydantic validation.
+
+Mirrors the TypeScript version's behavior: .env file values take priority
+over system environment variables.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _load_dotenv(path: str = ".env") -> dict[str, str]:
+    """Parse a .env file, stripping quotes. Returns empty dict if file missing."""
+    result: dict[str, str] = {}
+    p = Path(path)
+    if not p.exists():
+        return result
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip surrounding quotes
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
 class AppConfig(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+    model_config = SettingsConfigDict(extra="ignore")
 
     # Required
     notion_token: str = Field(min_length=1)
@@ -56,10 +79,15 @@ class AppConfig(BaseSettings):
 _config: AppConfig | None = None
 
 
-def get_config() -> AppConfig:
+def get_config(env_file: str = ".env") -> AppConfig:
     global _config
     if _config is None:
-        _config = AppConfig()  # type: ignore[call-arg]
+        # .env file values override system env vars (matching TS behavior)
+        init_kwargs: dict[str, Any] = {}
+        dotenv = _load_dotenv(env_file)
+        for key, value in dotenv.items():
+            init_kwargs[key.lower()] = value
+        _config = AppConfig(**init_kwargs)  # type: ignore[arg-type]
     return _config
 
 
