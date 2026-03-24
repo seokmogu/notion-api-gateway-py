@@ -20,7 +20,7 @@ STATUS_COMPLETED = "완료"
 STATUS_FAILED = "Failed"
 STATUS_ACTIVE = "Active"
 
-MAX_RETRY_COUNT = 3
+MAX_RETRY_COUNT = 10
 
 # Korean property names from the Notion form database
 PROP_ORGANIZATION = "조직명"
@@ -110,8 +110,8 @@ async def get_pending_requests(limit: int = 10) -> list[RequestRecord]:
         {
             "filter": {
                 "or": [
-                    {"property": PROP_STATUS, "status": {"equals": STATUS_REQUESTED}},
-                    {"property": PROP_STATUS, "status": {"equals": STATUS_FAILED}},
+                    {"property": PROP_STATUS, "select": {"equals": STATUS_REQUESTED}},
+                    {"property": PROP_STATUS, "select": {"equals": STATUS_FAILED}},
                 ]
             },
             "sorts": [{"property": PROP_REQUEST_DATE, "direction": "ascending"}],
@@ -127,7 +127,7 @@ async def get_issued_requests(limit: int = 10) -> list[RequestRecord]:
     result = await query_database(
         cfg.notion_requests_database_id,
         {
-            "filter": {"property": PROP_STATUS, "status": {"equals": STATUS_ISSUED}},
+            "filter": {"property": PROP_STATUS, "select": {"equals": STATUS_ISSUED}},
             "sorts": [{"property": PROP_REQUEST_DATE, "direction": "ascending"}],
             "page_size": limit,
         },
@@ -147,7 +147,7 @@ async def get_existing_token_for_page(canonical_page_id: str) -> RequestRecord |
                         "property": PROP_CANONICAL_PAGE_ID,
                         "rich_text": {"equals": canonical_page_id},
                     },
-                    {"property": PROP_STATUS, "status": {"equals": STATUS_COMPLETED}},
+                    {"property": PROP_STATUS, "select": {"equals": STATUS_COMPLETED}},
                 ]
             },
             "page_size": 1,
@@ -162,7 +162,7 @@ def _rich_text(text: str) -> dict[str, Any]:
 
 
 def _status(name: str) -> dict[str, Any]:
-    return {"status": {"name": name}}
+    return {"select": {"name": name}}
 
 
 def _now_iso() -> str:
@@ -175,7 +175,7 @@ async def mark_request_processing(request_id: str) -> None:
 
 async def mark_request_failed(request_id: str, message: str, retry_count: int = 0) -> None:
     new_count = retry_count + 1
-    status = STATUS_FAILED if new_count < MAX_RETRY_COUNT else "Max Retries"
+    status = STATUS_FAILED
     await update_page_properties(
         request_id,
         {
@@ -209,6 +209,21 @@ async def mark_request_connected(request_id: str) -> None:
         request_id,
         {PROP_CONNECTION_STATUS: _rich_text("Yes")},
     )
+
+
+async def cleanup_max_retries() -> int:
+    """Find 'Max Retries' records and change them to 'Failed'."""
+    cfg = get_config()
+    result = await query_database(
+        cfg.notion_requests_database_id,
+        {"filter": {"property": PROP_STATUS, "select": {"equals": "Max Retries"}}},
+    )
+    pages = result.get("results", [])
+    for page in pages:
+        page_id = page["id"]
+        await update_page_properties(page_id, {PROP_STATUS: _status(STATUS_FAILED)})
+        logger.info("Cleaned up Max Retries -> Failed: %s", page_id)
+    return len(pages)
 
 
 async def mark_request_completed(request_id: str) -> None:

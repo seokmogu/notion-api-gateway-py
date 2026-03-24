@@ -73,6 +73,6 @@ def build_deterministic_integration_name(
     Example: 'API Access Data Platform Tribe 3197d832'
     """
     title_part = (page_title or "").strip()[:40].strip()
-    id_suffix = page_id.replace("-", "")[:8]
+    id_suffix = page_id.replace("-", "")[-8:]
     parts = [prefix, title_part, id_suffix] if title_part else [prefix, id_suffix]
     return " ".join(parts)

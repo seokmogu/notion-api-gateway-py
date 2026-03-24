@@ -15,6 +15,7 @@ from notion_gateway.services.notion_browser import (
     refresh_session,
 )
 from notion_gateway.services.notion_records import (
+    cleanup_max_retries,
     get_existing_token_for_page,
     get_issued_requests,
     get_pending_requests,
@@ -24,7 +25,7 @@ from notion_gateway.services.notion_records import (
     mark_request_issued,
     mark_request_processing,
 )
-from notion_gateway.services.notifier import notify_failure, notify_requester
+from notion_gateway.services.notifier import notify_failure, notify_requested, notify_requester
 from notion_gateway.services.page_id import (
     build_deterministic_integration_name,
     extract_canonical_page_id,
@@ -53,6 +54,12 @@ async def process_one_request(record: RequestRecord) -> None:
     )
 
     await mark_request_processing(record.id)
+
+    # 0. Notify request received
+    try:
+        await notify_requested(record.id)
+    except Exception as e:
+        logger.warning("Request notification failed (non-fatal): %s", e)
 
     # 1. Extract canonical page ID
     source = record.canonical_page_id or record.page_url
@@ -209,6 +216,12 @@ async def run_poll_loop() -> None:
                 logger.error("Session refresh failed: %s", e)
             last_refresh = now
 
+        # Cleanup Max Retries → Failed
+        try:
+            await cleanup_max_retries()
+        except Exception as e:
+            logger.error("Error in max retries cleanup: %s", e)
+
         # Process pending requests
         try:
             await process_pending_requests(cfg.request_poll_limit)
@@ -221,8 +234,10 @@ async def run_poll_loop() -> None:
         except Exception as e:
             logger.error("Error in retry processing: %s", e)
 
-        # Sleep
-        if not _shutdown_requested:
-            await asyncio.sleep(cfg.poll_interval_seconds)
+        # Sleep (1s chunks for fast shutdown)
+        remaining = cfg.poll_interval_seconds
+        while remaining > 0 and not _shutdown_requested:
+            await asyncio.sleep(min(1.0, remaining))
+            remaining -= 1.0
 
     logger.info("Poll loop stopped (shutdown requested)")

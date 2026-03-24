@@ -12,14 +12,16 @@ from typing import Any
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Anchor all relative paths to the project root (where pyproject.toml lives)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-def _load_dotenv(path: str = ".env") -> dict[str, str]:
+
+def _load_dotenv(path: Path) -> dict[str, str]:
     """Parse a .env file, stripping quotes. Returns empty dict if file missing."""
     result: dict[str, str] = {}
-    p = Path(path)
-    if not p.exists():
+    if not path.exists():
         return result
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -46,7 +48,7 @@ class AppConfig(BaseSettings):
     notion_api_version: str = "2022-06-28"
 
     # Browser automation
-    notion_browser_profile_dir: str = "./data/notion-browser-profile"
+    notion_browser_profile_dir: str = ""
     notion_headless: bool = True
     notion_integration_name_prefix: str = "API Access"
     notion_workspace_name: str | None = None
@@ -57,6 +59,10 @@ class AppConfig(BaseSettings):
     # Slack
     slack_bot_token: str | None = None
 
+    # SSL
+    no_ssl_verify: bool = False
+    ssl_ca_file: str | None = None
+
     # Polling
     request_poll_interval_ms: int = Field(default=15000, ge=1000)
     request_poll_limit: int = Field(default=10, ge=1, le=100)
@@ -64,6 +70,10 @@ class AppConfig(BaseSettings):
     @field_validator("notion_browser_profile_dir")
     @classmethod
     def ensure_profile_dir(cls, v: str) -> str:
+        if not v:
+            v = str(_PROJECT_ROOT / "data" / "notion-browser-profile")
+        elif not Path(v).is_absolute():
+            v = str(_PROJECT_ROOT / v)
         Path(v).mkdir(parents=True, exist_ok=True)
         return v
 
@@ -83,8 +93,10 @@ def get_config(env_file: str = ".env") -> AppConfig:
     global _config
     if _config is None:
         # .env file values override system env vars (matching TS behavior)
+        # Resolve .env relative to project root, not CWD
+        env_path = _PROJECT_ROOT / env_file
         init_kwargs: dict[str, Any] = {}
-        dotenv = _load_dotenv(env_file)
+        dotenv = _load_dotenv(env_path)
         for key, value in dotenv.items():
             init_kwargs[key.lower()] = value
         _config = AppConfig(**init_kwargs)  # type: ignore[arg-type]

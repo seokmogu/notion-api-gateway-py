@@ -29,11 +29,11 @@ async def _slack_api(method: str, body: dict[str, str | bool]) -> dict:
     if not cfg.slack_bot_token:
         raise RuntimeError("SLACK_BOT_TOKEN is not configured")
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, verify=not cfg.no_ssl_verify) as client:
         response = await client.post(
             f"{SLACK_API_BASE}/{method}",
             headers={"Authorization": f"Bearer {cfg.slack_bot_token}"},
-            json=body,
+            data=body,
         )
         data = response.json()
         if not data.get("ok"):
@@ -96,21 +96,19 @@ async def send_slack_dm(email: str, message: str) -> bool:
 
 def format_token_issued_message(title: str, token: str, page_url: str) -> str:
     return (
-        f":white_check_mark: *Notion API Token Issued*\n\n"
-        f"*Page:* {title}\n"
-        f"*Token:* `{token}`\n"
-        f"*URL:* {page_url}\n\n"
-        f"This token has been granted access to the specified page."
+        f":white_check_mark: *Notion API 토큰 발급 완료*\n\n"
+        f"*조직명:* {title}\n"
+        f"*토큰:* `{token}`\n"
+        f"*페이지:* {page_url}\n\n"
+        f"해당 페이지에 대한 API 접근 권한이 부여되었습니다."
     )
 
 
 def format_token_failed_message(title: str, error: str, page_url: str) -> str:
     return (
-        f":warning: *Token Request Failed*\n\n"
-        f"*Page:* {title}\n"
-        f"*Error:* {error}\n"
-        f"*URL:* {page_url}\n\n"
-        f"Valid URL formats:\n"
-        f"- `https://www.notion.so/workspace/Page-Name-<id>`\n"
-        f"- Direct page ID (UUID or 32-char hex)"
+        f":warning: *Notion API 토큰 발급 실패*\n\n"
+        f"*조직명:* {title}\n"
+        f"*오류:* {error}\n"
+        f"*페이지:* {page_url}\n\n"
+        f"관리자가 확인 후 다시 처리할 예정입니다."
     )

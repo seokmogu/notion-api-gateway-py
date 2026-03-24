@@ -41,7 +41,13 @@ async def notion_fetch(
 
     retryable_statuses = {429, 502, 503, 504}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    verify: str | bool = True
+    if cfg.no_ssl_verify:
+        verify = False
+    elif cfg.ssl_ca_file:
+        verify = cfg.ssl_ca_file
+
+    async with httpx.AsyncClient(timeout=30.0, verify=verify) as client:
         for attempt in range(max_retries):
             try:
                 response = await client.request(
