@@ -15,6 +15,7 @@ from notion_gateway.services.notion_browser import (
     refresh_session,
 )
 from notion_gateway.services.notion_records import (
+    MAX_RETRY_COUNT,
     cleanup_max_retries,
     get_existing_token_for_page,
     get_issued_requests,
@@ -55,11 +56,12 @@ async def process_one_request(record: RequestRecord) -> None:
 
     await mark_request_processing(record.id)
 
-    # 0. Notify request received
-    try:
-        await notify_requested(record.id)
-    except Exception as e:
-        logger.warning("Request notification failed (non-fatal): %s", e)
+    # 0. Notify request received (only for fresh requests, not Failed retries)
+    if not record.token:
+        try:
+            await notify_requested(record.id)
+        except Exception as e:
+            logger.warning("Request notification failed (non-fatal): %s", e)
 
     # 1. Extract canonical page ID
     source = record.canonical_page_id or record.page_url
@@ -78,7 +80,16 @@ async def process_one_request(record: RequestRecord) -> None:
     # 2. Check for existing token
     existing = await get_existing_token_for_page(canonical_page_id)
     if existing and existing.token:
-        if await verify_page_access(canonical_page_id, existing.token):
+        try:
+            access = await verify_page_access(canonical_page_id, existing.token)
+        except Exception:
+            # Transient network error — conservatively reuse the existing token
+            logger.warning(
+                "Network error verifying existing token for page %s; reusing token",
+                canonical_page_id,
+            )
+            access = True
+        if access:
             logger.info("Reusing existing token for page %s", canonical_page_id)
             await mark_request_issued(
                 record.id,
@@ -86,8 +97,16 @@ async def process_one_request(record: RequestRecord) -> None:
                 existing.integration_name or "existing",
                 canonical_page_id,
             )
-            await _notify_and_complete(record.id)
+            # Skip notification if:
+            #   - same request reprocessed (status was wrongly reset to Failed), OR
+            #   - current record already has a token (was previously issued and notified)
+            # Notify only for genuinely new requests reusing an existing page token.
+            if existing.id == record.id or record.token:
+                await mark_request_completed(record.id)
+            else:
+                await _notify_and_complete(record.id)
             return
+        logger.info("Existing token for page %s is invalid; reprovisioning", canonical_page_id)
 
     # 3. Provision new token via browser
     integration_name = build_deterministic_integration_name(
@@ -98,10 +117,7 @@ async def process_one_request(record: RequestRecord) -> None:
 
     result = await provision_token_for_page(integration_name)
 
-    # 4. Verify token access
-    if not await verify_page_access(canonical_page_id, result.token):
-        logger.warning("Token provisioned but cannot access page yet, marking as issued anyway")
-
+    # 4. Persist token immediately (prevents orphaned tokens on subsequent network error)
     await mark_request_issued(
         record.id,
         result.token,
@@ -109,19 +125,21 @@ async def process_one_request(record: RequestRecord) -> None:
         canonical_page_id,
     )
 
-    # 5. Notify (best-effort)
-    await _notify_and_complete(record.id)
-
-    # 6. Connect integration to page (best-effort, background)
+    # 5. Connect integration to page (best-effort)
     try:
         connected = await connect_integration_to_page(page_url, integration_name)
         if connected:
             await mark_request_connected(record.id)
-            # Re-verify after connection
-            if await verify_page_access(canonical_page_id, result.token):
-                logger.info("Connection verified for page %s", canonical_page_id)
+            try:
+                if await verify_page_access(canonical_page_id, result.token):
+                    logger.info("Connection verified for page %s", canonical_page_id)
+            except Exception:
+                logger.warning("Network error verifying connection for page %s", canonical_page_id)
     except Exception as e:
         logger.warning("Failed to connect integration to page (best-effort): %s", e)
+
+    # 6. Notify and complete after connection attempt
+    await _notify_and_complete(record.id)
 
 
 async def _notify_and_complete(request_id: str) -> None:
@@ -154,8 +172,10 @@ async def process_pending_requests(limit: int = 10) -> int:
         except Exception as e:
             logger.error("Error processing request %s: %s", record.id, e)
             try:
+                new_retry_count = record.retry_count + 1
                 await mark_request_failed(record.id, str(e), record.retry_count)
-                await notify_failure(record.id, str(e))
+                if new_retry_count >= MAX_RETRY_COUNT:
+                    await notify_failure(record.id, str(e))
             except Exception as inner:
                 logger.error("Failed to mark request as failed: %s", inner)
     return processed
@@ -168,20 +188,26 @@ async def retry_issued_requests() -> int:
     for record in records:
         if _shutdown_requested:
             break
+        # Already connected — just ensure notify/complete ran
         if record.connection_status == "Yes":
+            await _notify_and_complete(record.id)
+            retried += 1
             continue
         try:
             page_url = record.page_url
             if not page_url and record.canonical_page_id:
                 page_url = f"https://www.notion.so/{record.canonical_page_id.replace('-', '')}"
+            connected = False
             if page_url and record.integration_name:
                 connected = await connect_integration_to_page(page_url, record.integration_name)
                 if connected:
                     await mark_request_connected(record.id)
 
-            # Send notifications if not yet completed
-            await _notify_and_complete(record.id)
-            retried += 1
+            if connected:
+                await _notify_and_complete(record.id)
+                retried += 1
+            else:
+                logger.info("Connection not yet ready for %s; will retry next cycle", record.id)
         except Exception as e:
             logger.warning("Retry failed for %s: %s", record.id, e)
     return retried

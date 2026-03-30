@@ -231,3 +231,22 @@ async def mark_request_completed(request_id: str) -> None:
         request_id,
         {PROP_STATUS: _status(STATUS_COMPLETED)},
     )
+
+
+async def get_completed_without_connection(limit: int = 50) -> list[RequestRecord]:
+    """Get completed records where connection status is not 'Yes'."""
+    cfg = get_config()
+    result = await query_database(
+        cfg.notion_requests_database_id,
+        {
+            "filter": {
+                "and": [
+                    {"property": PROP_STATUS, "select": {"equals": STATUS_COMPLETED}},
+                    {"property": PROP_CONNECTION_STATUS, "rich_text": {"does_not_equal": "Yes"}},
+                ]
+            },
+            "sorts": [{"property": PROP_REQUEST_DATE, "direction": "ascending"}],
+            "page_size": limit,
+        },
+    )
+    return [parse_request_record(page) for page in result.get("results", [])]

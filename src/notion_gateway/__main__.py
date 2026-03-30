@@ -97,6 +97,40 @@ async def cmd_process(request_id: str | None = None) -> None:
         logger.info("Processed %d request(s)", count)
 
 
+async def cmd_check_connections() -> None:
+    """Check completed records and update connection status via API verification."""
+    if not await _preflight_check():
+        sys.exit(1)
+
+    from notion_gateway.services.notion_api import verify_page_access
+    from notion_gateway.services.notion_records import get_completed_without_connection, mark_request_connected
+
+    records = await get_completed_without_connection(limit=50)
+    if not records:
+        logger.info("All completed records already have connection status set.")
+        return
+
+    logger.info("Found %d completed record(s) without connection status.", len(records))
+    updated = 0
+    for record in records:
+        if not record.token or not record.canonical_page_id:
+            logger.warning("Skipping %s: missing token or page ID", record.id)
+            continue
+        try:
+            accessible = await verify_page_access(record.canonical_page_id, record.token)
+        except Exception as e:
+            logger.warning("Error verifying %s (%s): %s", record.id, record.organization, e)
+            continue
+        if accessible:
+            await mark_request_connected(record.id)
+            logger.info("Updated connection status for %s (%s)", record.id, record.organization)
+            updated += 1
+        else:
+            logger.info("Token invalid for %s (%s) — skipping", record.id, record.organization)
+
+    logger.info("Updated %d/%d record(s).", updated, len(records))
+
+
 async def cmd_doctor() -> None:
     """Run diagnostic checks."""
     from notion_gateway.doctor import run_doctor
@@ -120,6 +154,7 @@ def main() -> None:
     process_parser.add_argument("--request", type=str, help="Specific request ID to process")
 
     subparsers.add_parser("doctor", help="Run diagnostic checks")
+    subparsers.add_parser("check-connections", help="Verify and update connection status for completed records")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
@@ -134,6 +169,7 @@ def main() -> None:
         "poll": cmd_poll,
         "process": lambda: cmd_process(getattr(args, "request", None)),
         "doctor": cmd_doctor,
+        "check-connections": cmd_check_connections,
     }
 
     coro = commands[args.command]()

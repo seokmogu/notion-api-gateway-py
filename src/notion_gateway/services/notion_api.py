@@ -138,8 +138,10 @@ async def verify_token(token: str) -> bool:
     try:
         await notion_fetch("users/me", token=token)
         return True
-    except NotionApiError:
-        return False
+    except NotionApiError as e:
+        if e.status in (401, 403):
+            return False
+        raise
 
 
 async def verify_page_access(page_id: str, token: str) -> bool:
@@ -147,5 +149,7 @@ async def verify_page_access(page_id: str, token: str) -> bool:
     try:
         await retrieve_page(page_id, token=token)
         return True
-    except NotionApiError:
-        return False
+    except NotionApiError as e:
+        if e.status in (401, 403, 404):
+            return False
+        raise
