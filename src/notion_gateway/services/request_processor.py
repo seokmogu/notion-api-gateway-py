@@ -136,7 +136,8 @@ async def process_one_request(record: RequestRecord) -> None:
         canonical_page_id,
     )
 
-    # 5. Connect integration to page (best-effort)
+    # 5. Connect integration to page
+    connected = False
     try:
         connected = await connect_integration_to_page(page_url, integration_name)
         if connected:
@@ -147,10 +148,13 @@ async def process_one_request(record: RequestRecord) -> None:
             except Exception:
                 logger.warning("Network error verifying connection for page %s", canonical_page_id)
     except Exception as e:
-        logger.warning("Failed to connect integration to page (best-effort): %s", e)
+        logger.warning("Failed to connect integration to page: %s", e)
 
-    # 6. Notify and complete after connection attempt
-    await _notify_and_complete(record.id)
+    # 6. Complete only if connected; otherwise leave as Issued for retry
+    if connected:
+        await _notify_and_complete(record.id)
+    else:
+        logger.info("Connection failed for %s — staying as Issued for retry", record.id)
 
 
 async def _notify_and_complete(request_id: str) -> None:

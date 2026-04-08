@@ -460,6 +460,25 @@ async def _connect_integration_to_page(
             ],
             timeout=5000,
         )
+        # Scroll down within the overlay menu if Connections not yet visible
+        if not conn_menu:
+            try:
+                menu_el = overlay.first
+                for _ in range(3):
+                    await menu_el.evaluate("el => el.scrollTop = el.scrollHeight")
+                    await page.wait_for_timeout(500)
+                    conn_menu = await _first_visible(
+                        page,
+                        [
+                            overlay.filter(has_text=re.compile(r"^연결\d*$")),
+                            overlay.filter(has_text=re.compile(r"^Connections?\d*$", re.I)),
+                        ],
+                        timeout=2000,
+                    )
+                    if conn_menu:
+                        break
+            except Exception:
+                pass
         if not conn_menu:
             await page.keyboard.press("Escape")
             if attempt == 0:
