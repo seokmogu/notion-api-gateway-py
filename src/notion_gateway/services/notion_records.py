@@ -18,7 +18,6 @@ STATUS_PROCESSING = "Processing"
 STATUS_ISSUED = "Issued"
 STATUS_COMPLETED = "완료"
 STATUS_FAILED = "Failed"
-STATUS_ACTIVE = "Active"
 
 MAX_RETRY_COUNT = 3
 
@@ -211,20 +210,6 @@ async def mark_request_connected(request_id: str) -> None:
         {PROP_CONNECTION_STATUS: _rich_text("Yes")},
     )
 
-
-async def cleanup_max_retries() -> int:
-    """Find 'Max Retries' records and change them to 'Failed'."""
-    cfg = get_config()
-    result = await query_database(
-        cfg.notion_requests_database_id,
-        {"filter": {"property": PROP_STATUS, "select": {"equals": "Max Retries"}}},
-    )
-    pages = result.get("results", [])
-    for page in pages:
-        page_id = page["id"]
-        await update_page_properties(page_id, {PROP_STATUS: _status(STATUS_FAILED)})
-        logger.info("Cleaned up Max Retries -> Failed: %s", page_id)
-    return len(pages)
 
 
 async def mark_request_completed(request_id: str) -> None:

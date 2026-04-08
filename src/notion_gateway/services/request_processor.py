@@ -16,7 +16,6 @@ from notion_gateway.services.notion_browser import (
 )
 from notion_gateway.services.notion_records import (
     MAX_RETRY_COUNT,
-    cleanup_max_retries,
     get_existing_token_for_page,
     get_issued_requests,
     get_pending_requests,
@@ -287,12 +286,7 @@ async def _sleep_interruptible(seconds: float) -> None:
 
 
 async def _run_poll_cycle(cfg: "AppConfig") -> None:
-    """Execute one poll cycle: cleanup, process pending, retry issued."""
-    try:
-        await cleanup_max_retries()
-    except Exception as e:
-        logger.error("Error in max retries cleanup: %s", e)
-
+    """Execute one poll cycle: process pending, retry issued."""
     try:
         await process_pending_requests(cfg.request_poll_limit)
     except Exception as e:
