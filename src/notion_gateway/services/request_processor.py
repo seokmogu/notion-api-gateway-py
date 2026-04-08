@@ -211,17 +211,37 @@ async def retry_issued_requests() -> int:
             await _notify_and_complete(record.id)
             retried += 1
             continue
-        try:
-            page_url = record.page_url
-            if not page_url and record.canonical_page_id:
-                page_url = f"https://www.notion.so/{record.canonical_page_id.replace('-', '')}"
-            connected = False
-            if page_url and record.integration_name:
-                connected = await connect_integration_to_page(page_url, record.integration_name)
-                if connected:
-                    await mark_request_connected(record.id)
 
+        # Fail fast: missing URL/page ID or token — no point retrying
+        page_url = record.page_url
+        if not page_url and record.canonical_page_id:
+            page_url = f"https://www.notion.so/{record.canonical_page_id.replace('-', '')}"
+
+        if not page_url or not record.integration_name or not record.token:
+            reason = "Missing page URL" if not page_url else "Missing integration name" if not record.integration_name else "Missing token"
+            logger.warning("Marking %s as failed: %s", record.id, reason)
+            await mark_request_failed(record.id, reason, record.retry_count)
+            if record.retry_count + 1 >= MAX_RETRY_COUNT:
+                await notify_failure(record.id, reason)
+            continue
+
+        # Verify token is still valid before attempting connection
+        if record.canonical_page_id:
+            try:
+                access = await verify_page_access(record.canonical_page_id, record.token)
+                if not access:
+                    logger.warning("Token invalid for %s (%s) — marking as failed", record.id, record.organization)
+                    await mark_request_failed(record.id, "Token no longer has access to page", record.retry_count)
+                    if record.retry_count + 1 >= MAX_RETRY_COUNT:
+                        await notify_failure(record.id, "Token no longer has access to page")
+                    continue
+            except Exception as e:
+                logger.warning("Could not verify token for %s: %s — will retry", record.id, e)
+
+        try:
+            connected = await connect_integration_to_page(page_url, record.integration_name)
             if connected:
+                await mark_request_connected(record.id)
                 await _notify_and_complete(record.id)
                 retried += 1
             else:
