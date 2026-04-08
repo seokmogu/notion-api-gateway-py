@@ -46,6 +46,18 @@ def _request_shutdown(signum: int, frame: object) -> None:
 
 async def process_one_request(record: RequestRecord) -> None:
     """Process a single token request through the full provisioning flow."""
+    from notion_gateway.services.notion_records import STATUS_COMPLETED
+
+    # Guard: skip already completed records (e.g. via manual process --request)
+    if record.status == STATUS_COMPLETED:
+        logger.info("Skipping already completed request %s", record.id)
+        return
+
+    # Guard: skip records that exhausted retries
+    if record.retry_count >= MAX_RETRY_COUNT:
+        logger.info("Skipping request %s: max retries (%d) reached", record.id, record.retry_count)
+        return
+
     cfg = get_config()
     logger.info(
         "Processing request %s: org=%s, url=%s",

@@ -20,7 +20,7 @@ STATUS_COMPLETED = "완료"
 STATUS_FAILED = "Failed"
 STATUS_ACTIVE = "Active"
 
-MAX_RETRY_COUNT = 10
+MAX_RETRY_COUNT = 3
 
 # Korean property names from the Notion form database
 PROP_ORGANIZATION = "조직명"
@@ -103,7 +103,7 @@ def parse_request_record(page: dict[str, Any]) -> RequestRecord:
 
 
 async def get_pending_requests(limit: int = 10) -> list[RequestRecord]:
-    """Get requests with status 'Requested' or 'Failed'."""
+    """Get requests with status 'Requested' or 'Failed' (excluding max retries)."""
     cfg = get_config()
     result = await query_database(
         cfg.notion_requests_database_id,
@@ -118,7 +118,8 @@ async def get_pending_requests(limit: int = 10) -> list[RequestRecord]:
             "page_size": limit,
         },
     )
-    return [parse_request_record(page) for page in result.get("results", [])]
+    records = [parse_request_record(page) for page in result.get("results", [])]
+    return [r for r in records if r.retry_count < MAX_RETRY_COUNT]
 
 
 async def get_issued_requests(limit: int = 10) -> list[RequestRecord]:
