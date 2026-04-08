@@ -63,7 +63,18 @@ async def process_one_request(record: RequestRecord) -> None:
         except Exception as e:
             logger.warning("Request notification failed (non-fatal): %s", e)
 
-    # 1. Extract canonical page ID
+    # 1. Validate page URL — reject unsupported formats before any processing
+    if record.page_url and ".notion.site" in record.page_url:
+        await mark_request_failed(
+            record.id,
+            "notion.site URLs (external shares) are not supported. "
+            "Please use an internal Notion page URL: "
+            "https://www.notion.so/workspace/Page-Name-<id>",
+            record.retry_count,
+        )
+        return
+
+    # 2. Extract canonical page ID
     source = record.canonical_page_id or record.page_url
     if not source:
         await mark_request_failed(record.id, "No page URL or page ID provided", record.retry_count)
