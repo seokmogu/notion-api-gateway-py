@@ -17,8 +17,10 @@ class TestAppConfig:
         assert cfg.notion_api_version == "2022-06-28"
         assert cfg.notion_headless is True
         assert cfg.notion_integration_name_prefix == "API Access"
-        assert cfg.request_poll_interval_ms == 15000
+        assert cfg.request_poll_interval_ms == 60000
         assert cfg.request_poll_limit == 10
+        assert cfg.network_max_retries == 3
+        assert cfg.network_backoff_seconds == 3600
 
     def test_poll_interval_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NOTION_TOKEN", "ntn_test")

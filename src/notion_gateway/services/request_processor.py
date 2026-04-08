@@ -7,7 +7,7 @@ import logging
 import signal
 import time
 
-from notion_gateway.config import get_config
+from notion_gateway.config import AppConfig, get_config
 from notion_gateway.services.notion_api import verify_page_access
 from notion_gateway.services.notion_browser import (
     connect_integration_to_page,
@@ -143,16 +143,34 @@ async def process_one_request(record: RequestRecord) -> None:
 
 
 async def _notify_and_complete(request_id: str) -> None:
-    """Send notifications and mark as completed (best-effort)."""
+    """Mark as completed, then send notification. Idempotent — skips if already done."""
+    from notion_gateway.services.notion_api import retrieve_page
+    from notion_gateway.services.notion_records import STATUS_COMPLETED, PROP_STATUS
+
+    # Guard: re-read current status to avoid duplicate notifications
     try:
-        await notify_requester(request_id)
+        page = await retrieve_page(request_id)
+        props = page.get("properties", {})
+        status_prop = props.get(PROP_STATUS, {})
+        status_type = status_prop.get("type", "")
+        current_status = (status_prop.get(status_type) or {}).get("name", "")
+        if current_status == STATUS_COMPLETED:
+            logger.debug("Request %s already completed — skipping notification", request_id)
+            return
     except Exception as e:
-        logger.warning("Notification failed (non-fatal): %s", e)
+        logger.warning("Failed to check current status for %s: %s", request_id, e)
+        return  # Don't proceed if we can't verify status
 
     try:
         await mark_request_completed(request_id)
     except Exception as e:
         logger.warning("Failed to mark as completed: %s", e)
+        return  # Don't notify if status update failed — retry next cycle
+
+    try:
+        await notify_requester(request_id)
+    except Exception as e:
+        logger.warning("Notification failed (non-fatal): %s", e)
 
 
 async def process_pending_requests(limit: int = 10) -> int:
@@ -213,6 +231,32 @@ async def retry_issued_requests() -> int:
     return retried
 
 
+async def _sleep_interruptible(seconds: float) -> None:
+    """Sleep in 1s chunks so shutdown signals are handled promptly."""
+    remaining = seconds
+    while remaining > 0 and not _shutdown_requested:
+        await asyncio.sleep(min(1.0, remaining))
+        remaining -= 1.0
+
+
+async def _run_poll_cycle(cfg: "AppConfig") -> None:
+    """Execute one poll cycle: cleanup, process pending, retry issued."""
+    try:
+        await cleanup_max_retries()
+    except Exception as e:
+        logger.error("Error in max retries cleanup: %s", e)
+
+    try:
+        await process_pending_requests(cfg.request_poll_limit)
+    except Exception as e:
+        raise
+
+    try:
+        await retry_issued_requests()
+    except Exception as e:
+        raise
+
+
 async def run_poll_loop() -> None:
     """Run the main polling loop with session refresh every hour."""
     global _shutdown_requested
@@ -224,11 +268,14 @@ async def run_poll_loop() -> None:
     cfg = get_config()
     last_refresh = time.monotonic()
     refresh_interval = 3600  # 1 hour
+    consecutive_failures = 0
 
     logger.info(
-        "Starting poll loop (interval=%.1fs, limit=%d)",
+        "Starting poll loop (interval=%.1fs, limit=%d, network_retries=%d, backoff=%ds)",
         cfg.poll_interval_seconds,
         cfg.request_poll_limit,
+        cfg.network_max_retries,
+        cfg.network_backoff_seconds,
     )
 
     while not _shutdown_requested:
@@ -242,28 +289,37 @@ async def run_poll_loop() -> None:
                 logger.error("Session refresh failed: %s", e)
             last_refresh = now
 
-        # Cleanup Max Retries → Failed
+        # Run poll cycle with network retry tracking
         try:
-            await cleanup_max_retries()
+            await _run_poll_cycle(cfg)
+            if consecutive_failures > 0:
+                logger.info(
+                    "Poll cycle succeeded after %d consecutive failure(s), resuming normal interval",
+                    consecutive_failures,
+                )
+            consecutive_failures = 0
         except Exception as e:
-            logger.error("Error in max retries cleanup: %s", e)
+            consecutive_failures += 1
+            if consecutive_failures >= cfg.network_max_retries:
+                logger.error(
+                    "Poll cycle failed %d/%d times consecutively: %s. "
+                    "Backing off for %ds before retrying.",
+                    consecutive_failures,
+                    cfg.network_max_retries,
+                    e,
+                    cfg.network_backoff_seconds,
+                )
+                consecutive_failures = 0
+                await _sleep_interruptible(cfg.network_backoff_seconds)
+                continue
+            else:
+                logger.warning(
+                    "Poll cycle failed (%d/%d): %s. Retrying next cycle.",
+                    consecutive_failures,
+                    cfg.network_max_retries,
+                    e,
+                )
 
-        # Process pending requests
-        try:
-            await process_pending_requests(cfg.request_poll_limit)
-        except Exception as e:
-            logger.error("Error in pending requests processing: %s", e)
-
-        # Retry issued requests
-        try:
-            await retry_issued_requests()
-        except Exception as e:
-            logger.error("Error in retry processing: %s", e)
-
-        # Sleep (1s chunks for fast shutdown)
-        remaining = cfg.poll_interval_seconds
-        while remaining > 0 and not _shutdown_requested:
-            await asyncio.sleep(min(1.0, remaining))
-            remaining -= 1.0
+        await _sleep_interruptible(cfg.poll_interval_seconds)
 
     logger.info("Poll loop stopped (shutdown requested)")

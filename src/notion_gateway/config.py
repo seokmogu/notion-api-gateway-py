@@ -64,8 +64,12 @@ class AppConfig(BaseSettings):
     ssl_ca_file: str | None = None
 
     # Polling
-    request_poll_interval_ms: int = Field(default=15000, ge=1000)
+    request_poll_interval_ms: int = Field(default=60000, ge=1000)
     request_poll_limit: int = Field(default=10, ge=1, le=100)
+
+    # Network retry
+    network_max_retries: int = Field(default=3, ge=1, le=10)
+    network_backoff_seconds: int = Field(default=3600, ge=60)
 
     @field_validator("notion_browser_profile_dir")
     @classmethod
