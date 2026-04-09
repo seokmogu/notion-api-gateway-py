@@ -83,8 +83,10 @@ async def cmd_process(request_id: str | None = None) -> None:
         sys.exit(1)
 
     if request_id:
-        from notion_gateway.services.notion_records import get_pending_requests, parse_request_record
         from notion_gateway.services.notion_api import retrieve_page
+        from notion_gateway.services.notion_records import (
+            parse_request_record,
+        )
         from notion_gateway.services.request_processor import process_one_request
 
         page = await retrieve_page(request_id)
@@ -103,7 +105,10 @@ async def cmd_check_connections() -> None:
         sys.exit(1)
 
     from notion_gateway.services.notion_api import verify_page_access
-    from notion_gateway.services.notion_records import get_completed_without_connection, mark_request_connected
+    from notion_gateway.services.notion_records import (
+        get_completed_without_connection,
+        mark_request_connected,
+    )
 
     records = await get_completed_without_connection(limit=50)
     if not records:
@@ -154,7 +159,9 @@ def main() -> None:
     process_parser.add_argument("--request", type=str, help="Specific request ID to process")
 
     subparsers.add_parser("doctor", help="Run diagnostic checks")
-    subparsers.add_parser("check-connections", help="Verify and update connection status for completed records")
+    subparsers.add_parser(
+        "check-connections", help="Verify and update connection status for completed records"
+    )
 
     args = parser.parse_args()
     _setup_logging(args.verbose)

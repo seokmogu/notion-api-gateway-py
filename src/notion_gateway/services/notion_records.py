@@ -211,7 +211,6 @@ async def mark_request_connected(request_id: str) -> None:
     )
 
 
-
 async def mark_request_completed(request_id: str) -> None:
     await update_page_properties(
         request_id,

@@ -54,13 +54,14 @@ class TestParseRequestRecord:
             "id": "page-123",
             "properties": {
                 "조직명": {"type": "title", "title": [{"plain_text": "Test Org"}]},
-                "신청 페이지 링크": {"type": "url", "url": "https://www.notion.so/test-page-abc123"},
+                "신청 페이지 링크": {
+                    "type": "url",
+                    "url": "https://www.notion.so/test-page-abc123",
+                },
                 "정규 페이지 ID": {"type": "rich_text", "rich_text": [{"plain_text": "abc-123"}]},
                 "신청자": {
                     "type": "people",
-                    "people": [
-                        {"id": "user-1", "person": {"email": "test@example.com"}}
-                    ],
+                    "people": [{"id": "user-1", "person": {"email": "test@example.com"}}],
                 },
                 "상태": {"type": "status", "status": {"name": "Requested"}},
                 "발급 토큰키": {"type": "rich_text", "rich_text": []},

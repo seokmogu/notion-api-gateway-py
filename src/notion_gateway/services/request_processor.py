@@ -8,6 +8,7 @@ import signal
 import time
 
 from notion_gateway.config import AppConfig, get_config
+from notion_gateway.services.notifier import notify_failure, notify_requested, notify_requester
 from notion_gateway.services.notion_api import verify_page_access
 from notion_gateway.services.notion_browser import (
     connect_integration_to_page,
@@ -25,7 +26,6 @@ from notion_gateway.services.notion_records import (
     mark_request_issued,
     mark_request_processing,
 )
-from notion_gateway.services.notifier import notify_failure, notify_requested, notify_requester
 from notion_gateway.services.page_id import (
     build_deterministic_integration_name,
     extract_canonical_page_id,
@@ -171,7 +171,7 @@ async def process_one_request(record: RequestRecord) -> None:
 async def _notify_and_complete(request_id: str) -> None:
     """Mark as completed, then send notification. Idempotent — skips if already done."""
     from notion_gateway.services.notion_api import retrieve_page
-    from notion_gateway.services.notion_records import STATUS_COMPLETED, PROP_STATUS
+    from notion_gateway.services.notion_records import PROP_STATUS, STATUS_COMPLETED
 
     # Guard: re-read current status to avoid duplicate notifications
     try:
@@ -244,7 +244,13 @@ async def retry_issued_requests() -> int:
             page_url = f"https://www.notion.so/{record.canonical_page_id.replace('-', '')}"
 
         if not page_url or not record.integration_name or not record.token:
-            reason = "Missing page URL" if not page_url else "Missing integration name" if not record.integration_name else "Missing token"
+            reason = (
+                "Missing page URL"
+                if not page_url
+                else "Missing integration name"
+                if not record.integration_name
+                else "Missing token"
+            )
             logger.warning("Marking %s as failed: %s", record.id, reason)
             await mark_request_failed(record.id, reason, record.retry_count)
             if record.retry_count + 1 >= MAX_RETRY_COUNT:
@@ -256,8 +262,14 @@ async def retry_issued_requests() -> int:
             try:
                 access = await verify_page_access(record.canonical_page_id, record.token)
                 if not access:
-                    logger.warning("Token invalid for %s (%s) — marking as failed", record.id, record.organization)
-                    await mark_request_failed(record.id, "Token no longer has access to page", record.retry_count)
+                    logger.warning(
+                        "Token invalid for %s (%s) — marking as failed",
+                        record.id,
+                        record.organization,
+                    )
+                    await mark_request_failed(
+                        record.id, "Token no longer has access to page", record.retry_count
+                    )
                     if record.retry_count + 1 >= MAX_RETRY_COUNT:
                         await notify_failure(record.id, "Token no longer has access to page")
                     continue
@@ -289,12 +301,12 @@ async def _run_poll_cycle(cfg: "AppConfig") -> None:
     """Execute one poll cycle: process pending, retry issued."""
     try:
         await process_pending_requests(cfg.request_poll_limit)
-    except Exception as e:
+    except Exception:
         raise
 
     try:
         await retry_issued_requests()
-    except Exception as e:
+    except Exception:
         raise
 
 

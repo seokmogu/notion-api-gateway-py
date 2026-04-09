@@ -20,7 +20,9 @@ VIEWPORT = {"width": 1440, "height": 900}
 SELECTOR_TIMEOUT = 15_000  # 15s
 
 
-async def _first_visible(page: Page, locators: list[Locator], timeout: int = 3000) -> Locator | None:
+async def _first_visible(
+    page: Page, locators: list[Locator], timeout: int = 3000
+) -> Locator | None:
     """Try each locator, return the first one that becomes visible."""
     for loc in locators:
         try:
@@ -250,7 +252,9 @@ async def _ensure_integration_exists(page: Page, integration_name: str) -> None:
 
     # Select workspace (required) — find dropdown via parent of "관련 워크스페이스" label
     cfg = get_config()
-    ws_label_section = page.locator("text=/관련 워크스페이스|associated workspace/i").locator("..").locator("..")
+    ws_label_section = (
+        page.locator("text=/관련 워크스페이스|associated workspace/i").locator("..").locator("..")
+    )
     ws_dropdown = await _first_visible(
         page,
         [ws_label_section.locator('[role="button"][aria-haspopup="dialog"]')],
@@ -306,7 +310,9 @@ async def _ensure_integration_exists(page: Page, integration_name: str) -> None:
     configure_btn = await _first_visible(
         page,
         [
-            page.get_by_role("button", name=re.compile(r"configure integration|API 통합 설정 구성", re.I)),
+            page.get_by_role(
+                "button", name=re.compile(r"configure integration|API 통합 설정 구성", re.I)
+            ),
             page.get_by_text(re.compile(r"API 통합 설정 구성", re.I)),
             page.get_by_text(re.compile(r"configure integration", re.I)),
         ],
@@ -413,9 +419,7 @@ async def _copy_integration_token(page: Page) -> str:
     )
 
 
-async def _connect_integration_to_page(
-    page: Page, page_url: str, integration_name: str
-) -> bool:
+async def _connect_integration_to_page(page: Page, page_url: str, integration_name: str) -> bool:
     """Connect an integration to a Notion page via UI automation."""
     logger.info("Connecting integration '%s' to page %s", integration_name, page_url)
     await page.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
@@ -442,7 +446,9 @@ async def _connect_integration_to_page(
             if attempt == 0:
                 await page.reload(wait_until="domcontentloaded")
                 try:
-                    await page.wait_for_selector('[aria-label="작업"], [aria-label="Actions"]', timeout=15_000)
+                    await page.wait_for_selector(
+                        '[aria-label="작업"], [aria-label="Actions"]', timeout=15_000
+                    )
                 except Exception:
                     await page.wait_for_timeout(5000)
                 continue

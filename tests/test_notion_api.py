@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pytest
-import httpx
 from pytest_httpx import HTTPXMock
 
-from notion_gateway.config import AppConfig, reset_config
+from notion_gateway.config import reset_config
 from notion_gateway.services.notion_api import notion_fetch, verify_token
 from notion_gateway.types import NotionApiError
 

@@ -26,7 +26,9 @@ class TestFormatTokenIssuedMessage:
 
 class TestFormatTokenFailedMessage:
     def test_contains_error(self) -> None:
-        msg = format_token_failed_message("Test Page", "Something went wrong", "https://notion.so/page")
+        msg = format_token_failed_message(
+            "Test Page", "Something went wrong", "https://notion.so/page"
+        )
         assert "Test Page" in msg
         assert "Something went wrong" in msg
         assert "Failed" in msg
