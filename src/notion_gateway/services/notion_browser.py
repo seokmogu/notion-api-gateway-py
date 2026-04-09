@@ -42,7 +42,7 @@ async def _launch_persistent_context(headless: bool = True) -> BrowserContext:
         cfg.notion_browser_profile_dir,
         headless=headless,
         viewport=VIEWPORT,
-        locale="ko-KR",
+        locale="en-US",
         args=launch_args,
     )
     return context
@@ -62,7 +62,7 @@ async def _launch_ephemeral(storage_state_path: Path) -> tuple[BrowserContext, o
     context = await browser.new_context(
         storage_state=str(storage_state_path),
         viewport=VIEWPORT if cfg.notion_headless else None,
-        locale="ko-KR",
+        locale="en-US",
     )
     await context.grant_permissions(
         ["clipboard-read", "clipboard-write"], origin="https://www.notion.so"
@@ -99,7 +99,7 @@ async def _handle_login(page: Page) -> None:
     email_input = await _first_visible(
         page,
         [
-            page.get_by_placeholder(re.compile(r"email|이메일", re.I)),
+            page.get_by_placeholder(re.compile(r"email", re.I)),
             page.locator('input[type="email"]'),
             page.locator('input[name="email"]'),
         ],
@@ -113,8 +113,7 @@ async def _handle_login(page: Page) -> None:
     continue_btn = await _first_visible(
         page,
         [
-            page.get_by_role("button", name=re.compile(r"continue|계속", re.I)),
-            page.locator('button[type="submit"]'),
+            page.get_by_role("button", name=re.compile(r"continue", re.I)),
         ],
     )
     if continue_btn:
@@ -125,7 +124,7 @@ async def _handle_login(page: Page) -> None:
     password_input = await _first_visible(
         page,
         [
-            page.get_by_placeholder(re.compile(r"password|비밀번호", re.I)),
+            page.get_by_placeholder(re.compile(r"password", re.I)),
             page.locator('input[type="password"]'),
         ],
         timeout=10_000,
@@ -142,12 +141,13 @@ async def _handle_login(page: Page) -> None:
     submit_btn = await _first_visible(
         page,
         [
-            page.get_by_role("button", name=re.compile(r"log in|로그인|continue|계속", re.I)),
-            page.locator('button[type="submit"]'),
+            page.get_by_role("button", name=re.compile(r"Continue with password", re.I)),
         ],
     )
     if submit_btn:
         await submit_btn.click()
+    else:
+        raise RuntimeError("으앙 로그인 버튼이 뽑혔어요 석모님 코드를 수정해주세요")
 
     # Handle 2FA if needed
     if cfg.notion_login_code:
@@ -581,7 +581,7 @@ async def provision_token_for_page(
         cfg.notion_browser_profile_dir,
         headless=cfg.notion_headless,
         viewport=VIEWPORT,
-        locale="ko-KR",
+        locale="en-US",
         args=launch_args,
     )
     try:
