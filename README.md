@@ -14,58 +14,360 @@ Notion API 토큰 자동 발급 서비스. 노션 폼에서 신청하면 통합 
   → 노션 DB 상태를 "완료"로 업데이트
 ```
 
-## 설치
+### 상태 흐름
 
-```bash
-uv sync
-playwright install chromium
-cp .env.example .env  # 환경변수 설정
+```
+Requested → Processing → Issued → 완료
+                ↓
+              Failed (최대 3회 재시도)
 ```
 
-### 요구사항
+## 요구사항
 
 - [uv](https://docs.astral.sh/uv/) 0.10+
 - Python 3.12+
-- Chromium (Playwright)
+- Chromium (Playwright가 자동 설치)
 - Notion API 토큰 (Internal Integration)
 - Slack Bot Token (선택)
 
-## 사용법
+## 로컬 설치
 
 ```bash
-# 브라우저 세션 초기화 (최초 1회, 수동 로그인)
-notion-gateway auth
+# uv 사용 (권장)
+uv sync
+playwright install chromium
+cp .env.example .env  # 환경변수 설정
 
-# 지속 폴링 실행
-notion-gateway poll
-
-# 단건 처리
-notion-gateway process
-
-# 특정 요청 처리
-notion-gateway process --request <page-id>
-
-# 브라우저 세션 갱신
-notion-gateway refresh
-
-# 설정 및 연결 진단
-notion-gateway doctor
+# 또는 pip 사용
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+playwright install chromium
+cp .env.example .env
 ```
 
 ## 환경변수
 
-| 변수 | 필수 | 설명 |
+### 필수
+
+| 변수 | 설명 | 예시 |
 |------|------|------|
-| `NOTION_TOKEN` | O | Notion API 토큰 (Internal Integration) |
-| `NOTION_REQUESTS_DATABASE_ID` | O | 신청 DB ID |
-| `NOTION_WORKSPACE_NAME` | - | 워크스페이스 이름 (통합 생성 시 선택) |
-| `NOTION_EMAIL` / `NOTION_PASSWORD` | - | 자동 로그인용 (SSO 미지원) |
-| `SLACK_BOT_TOKEN` | - | Slack DM 알림용 Bot Token |
-| `NO_SSL_VERIFY` | - | SSL 검증 비활성화 (`1`로 설정) |
-| `SSL_CA_FILE` | - | 커스텀 CA 인증서 경로 |
-| `REQUEST_POLL_INTERVAL_MS` | - | 폴링 간격 (기본: 15000ms) |
+| `NOTION_TOKEN` | Notion Internal Integration 토큰 | `ntn_xxx` |
+| `NOTION_REQUESTS_DATABASE_ID` | 신청 폼이 연결된 Notion DB ID (UUID) | `3297d832-2b04-8087-ab79-fd8dc364f884` |
+
+### 브라우저 자동화
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `NOTION_BROWSER_PROFILE_DIR` | `./data/notion-browser-profile` | 브라우저 프로필 저장 경로 (persistent context) |
+| `NOTION_HEADLESS` | `true` | 헤드리스 모드 (`false`로 설정 시 브라우저 창 표시) |
+| `NOTION_INTEGRATION_NAME_PREFIX` | `API Access` | 생성되는 통합 이름 접두사 |
+| `NOTION_WORKSPACE_NAME` | - | 워크스페이스 선택 힌트 (여러 워크스페이스가 있을 때) |
+| `NOTION_EMAIL` | - | 자동 로그인용 이메일 (SSO 미지원) |
+| `NOTION_PASSWORD` | - | 자동 로그인용 비밀번호 |
+| `NOTION_LOGIN_CODE` | - | 2FA 코드 (자동 로그인 시) |
+
+### Slack 알림
+
+현재 연결된 Slack 앱 정보:
+
+| 항목 | 값 |
+|------|-----|
+| 앱 이름 | `worx-agent` |
+| App ID | `A0ARU9YAP52` |
+| Bot ID | `B0ARNKVLVPY` |
+| 워크스페이스 | 웍스피어 (`jobkorea-linker.slack.com`) |
+| 관리 페이지 | https://api.slack.com/apps/A0ARU9YAP52 |
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `SLACK_BOT_TOKEN` | - | Slack Bot Token (`xoxb-...`). 필요 스코프: `chat:write`, `users:read.email`, `users:read` |
+
+### SSL / 네트워크
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `NO_SSL_VERIFY` | `false` | SSL 검증 비활성화 (`1`로 설정). 사내 프록시 환경용 |
+| `SSL_CA_FILE` | - | 커스텀 CA 인증서 경로. `NO_SSL_VERIFY` 대신 권장 |
+
+### 폴링 / 재시도
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `NOTION_API_VERSION` | `2022-06-28` | Notion API 버전 헤더 |
+| `REQUEST_POLL_INTERVAL_MS` | `15000` | 폴링 주기 (밀리초) |
+| `REQUEST_POLL_LIMIT` | `10` | 한 번에 처리할 최대 요청 수 |
+| `NETWORK_MAX_RETRIES` | `3` | 연속 네트워크 실패 허용 횟수 |
+| `NETWORK_BACKOFF_SECONDS` | `3600` | 최대 실패 후 대기 시간 (초, 기본 1시간) |
 
 전체 목록은 `.env.example` 참조.
+
+## CLI 명령어
+
+```bash
+# 브라우저 세션 초기화 (최초 1회, 수동 로그인 필요)
+notion-gateway auth
+
+# 브라우저 세션 갱신
+notion-gateway refresh
+
+# 지속 폴링 실행 (메인 운영 모드)
+notion-gateway poll
+
+# 단건 처리 (1회 실행 후 종료)
+notion-gateway process
+
+# 특정 요청만 처리
+notion-gateway process --request <page-id>
+
+# 기존 완료 건의 연결 상태 재확인
+notion-gateway check-connections
+
+# 설정 및 연결 진단
+notion-gateway doctor
+
+# 디버그 로깅
+notion-gateway -v poll
+```
+
+## 클라우드 배포
+
+### Docker
+
+프로젝트에 Dockerfile이 포함되어 있지 않습니다. 아래 Dockerfile을 참고하세요.
+
+```dockerfile
+FROM python:3.12-slim
+
+# Playwright 시스템 의존성
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
+    libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# uv 설치
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# 의존성 설치
+COPY pyproject.toml uv.lock ./
+RUN uv venv && uv pip install --no-cache .
+
+# Playwright Chromium 설치
+RUN uv run playwright install chromium
+
+# 소스 코드 복사
+COPY src/ src/
+
+# 브라우저 프로필 볼륨
+VOLUME ["/app/data"]
+
+# 환경변수 기본값
+ENV NOTION_BROWSER_PROFILE_DIR=/app/data/notion-browser-profile
+ENV NOTION_HEADLESS=true
+
+ENTRYPOINT ["uv", "run", "notion-gateway"]
+CMD ["poll"]
+```
+
+```bash
+# 빌드
+docker build -t notion-api-gateway .
+
+# 실행 (환경변수 파일 사용)
+docker run -d \
+  --name notion-gateway \
+  --env-file .env \
+  -v notion-gateway-data:/app/data \
+  --restart unless-stopped \
+  notion-api-gateway
+
+# 초기 인증 (최초 1회, 브라우저 표시 필요)
+docker run -it --rm \
+  --env-file .env \
+  -e NOTION_HEADLESS=false \
+  -v notion-gateway-data:/app/data \
+  notion-api-gateway auth
+
+# 로그 확인
+docker logs -f notion-gateway
+```
+
+### Docker Compose
+
+```yaml
+version: "3.8"
+services:
+  notion-gateway:
+    build: .
+    env_file: .env
+    environment:
+      NOTION_BROWSER_PROFILE_DIR: /app/data/notion-browser-profile
+      NOTION_HEADLESS: "true"
+    volumes:
+      - gateway-data:/app/data
+    restart: unless-stopped
+    # 헬스체크: doctor 명령으로 연결 상태 확인
+    healthcheck:
+      test: ["CMD", "uv", "run", "notion-gateway", "doctor"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+
+volumes:
+  gateway-data:
+```
+
+### systemd 서비스
+
+`/etc/systemd/system/notion-gateway.service`:
+
+```ini
+[Unit]
+Description=Notion API Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=notion-gateway
+WorkingDirectory=/opt/notion-api-gateway
+EnvironmentFile=/opt/notion-api-gateway/.env
+ExecStart=/opt/notion-api-gateway/.venv/bin/notion-gateway poll
+Restart=on-failure
+RestartSec=30
+
+# 시그널 처리 (graceful shutdown)
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# 보안 하드닝
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/notion-api-gateway/data
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# 서비스 등록 및 시작
+sudo systemctl daemon-reload
+sudo systemctl enable notion-gateway
+sudo systemctl start notion-gateway
+
+# 상태 확인
+sudo systemctl status notion-gateway
+sudo journalctl -u notion-gateway -f
+```
+
+## 배포 전 체크리스트
+
+### 1. 사전 준비
+
+- [ ] Notion Internal Integration 생성 ([https://www.notion.so/my-integrations](https://www.notion.so/my-integrations))
+  - 신청 DB에 대한 읽기/쓰기 권한 부여
+  - 토큰 값(`ntn_...`)을 `NOTION_TOKEN`에 설정
+- [ ] 신청용 Notion DB 생성 및 폼 연결
+  - DB ID를 `NOTION_REQUESTS_DATABASE_ID`에 설정
+- [ ] (선택) Slack Bot 생성 ([https://api.slack.com/apps](https://api.slack.com/apps))
+  - 필요 스코프: `chat:write`, `users:read.email`, `users:read`
+  - Bot Token을 `SLACK_BOT_TOKEN`에 설정
+
+### 2. Notion DB 스키마
+
+신청 DB에 다음 속성(property)이 필요합니다:
+
+| 속성 이름 | 타입 | 설명 |
+|-----------|------|------|
+| `조직명` | Title | 신청 조직명 |
+| `신청 페이지 링크` | URL | 접근 권한 부여할 페이지 URL |
+| `정규 페이지 ID` | Rich text | 정규화된 페이지 ID (자동 입력) |
+| `신청자` | People | 신청자 (폼에서 자동 할당) |
+| `상태` | Select | 처리 상태. 옵션: `Requested`, `Processing`, `Issued`, `완료`, `Failed` |
+| `발급 토큰키` | Rich text | 발급된 API 토큰 (자동 입력) |
+| `통합 이름` | Rich text | 생성된 통합 이름 (자동 입력) |
+| `처리 오류` | Rich text | 에러 메시지 (자동 입력) |
+| `신청일자` | Date | 신청 일시 |
+| `처리 완료일시` | Date | 완료 일시 (자동 입력) |
+| `연결 여부` | Checkbox | 페이지 연결 성공 여부 (자동 입력) |
+| `재시도 횟수` | Number | 재시도 카운터 (자동 입력) |
+
+### 3. 브라우저 인증 (필수, 최초 1회)
+
+Playwright가 Notion 웹 UI를 제어하려면 관리자 계정으로 로그인된 브라우저 세션이 필요합니다.
+
+```bash
+# 로컬에서 인증 (브라우저 창이 열림)
+NOTION_HEADLESS=false notion-gateway auth
+```
+
+인증 후 `data/notion-browser-profile/` 디렉토리에 세션이 저장됩니다. 이 디렉토리를 서버에 복사하거나, 서버에서 직접 `auth`를 실행하세요.
+
+서버에서 `auth`를 실행하려면:
+- X11 포워딩: `ssh -X user@server` 후 `NOTION_HEADLESS=false notion-gateway auth`
+- VNC/원격 데스크톱 사용
+
+폴링 중 세션은 **1시간마다 자동 갱신**됩니다. 세션이 만료되면 수동으로 `notion-gateway auth`를 다시 실행하세요.
+
+### 4. 네트워크 요구사항
+
+서비스가 접근해야 하는 외부 엔드포인트:
+
+| 대상 | 포트 | 용도 |
+|------|------|------|
+| `api.notion.com` | 443 (HTTPS) | Notion REST API |
+| `www.notion.so` | 443 (HTTPS) | 브라우저 자동화 (통합 생성) |
+| `slack.com` | 443 (HTTPS) | Slack API (알림, 선택) |
+
+### 5. SSL 인증서 설정
+
+사내 프록시 환경에서 자체 서명 인증서를 사용하는 경우:
+
+```bash
+# 방법 1: 커스텀 CA 인증서 (권장)
+SSL_CA_FILE=/path/to/corporate-ca-bundle.crt
+
+# 방법 2: SSL 검증 비활성화 (임시 용도)
+NO_SSL_VERIFY=1
+```
+
+### 6. 리소스 요구사항
+
+| 항목 | 최소 | 권장 |
+|------|------|------|
+| CPU | 1 vCPU | 2 vCPU |
+| 메모리 | 512 MB | 1 GB |
+| 디스크 | 500 MB | 1 GB |
+| 네트워크 | 아웃바운드 HTTPS | 아웃바운드 HTTPS |
+
+디스크는 Chromium 바이너리(~200MB) + 브라우저 프로필(~50MB)이 주요 사용량입니다.
+
+## 운영
+
+### 모니터링
+
+- `notion-gateway doctor` — Notion API 연결, DB 접근, Slack 연결 진단
+- 로그 출력은 stdout/stderr로 전달되므로 컨테이너 로그 또는 journalctl로 확인
+- `-v` 플래그로 디버그 로깅 활성화
+
+### Graceful Shutdown
+
+`SIGINT` 또는 `SIGTERM` 시그널로 안전하게 종료됩니다. 현재 처리 중인 요청이 있으면 완료 후 종료합니다.
+
+### 트러블슈팅
+
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `auth` 후에도 통합 생성 실패 | 브라우저 세션 만료 | `notion-gateway auth` 재실행 |
+| Slack 알림 미발송 | Bot Token 미설정 또는 스코프 부족 | `SLACK_BOT_TOKEN` 확인, 스코프 확인 |
+| SSL 에러 | 사내 프록시 인증서 문제 | `SSL_CA_FILE` 설정 또는 `NO_SSL_VERIFY=1` |
+| "bot detected" 에러 | Notion 봇 감지 차단 | 잠시 후 재시도, 필요 시 수동 `auth` |
+| 재시도 3회 초과 후 중단 | 반복 실패 | `doctor`로 진단 후 원인 해결, DB에서 재시도 횟수 초기화 |
+| 폴링 중 1시간 대기 | 네트워크 연속 실패 | 네트워크 연결 확인, `NETWORK_BACKOFF_SECONDS` 조정 |
 
 ## 아키텍처
 
@@ -80,13 +382,31 @@ notion-gateway doctor
 - **Persistent context** — 브라우저 프로필 디렉토리로 자동 복구 (세션 만료 대응)
 - 1시간마다 자동 세션 갱신
 
-### 상태 흐름
+### 프로젝트 구조
 
 ```
-Requested → Processing → Issued → 완료
-                ↓
-              Failed (최대 10회 재시도)
+src/notion_gateway/
+├── __init__.py              # 패키지 (version: 2.0.0)
+├── __main__.py              # CLI 진입점 (auth, poll, process, doctor 등)
+├── config.py                # Pydantic Settings 기반 환경변수 검증
+├── types.py                 # 데이터 모델, 예외 정의
+├── doctor.py                # 진단 유틸리티
+└── services/
+    ├── notion_api.py        # Notion REST API 클라이언트 (httpx, 지수 백오프 재시도)
+    ├── notion_browser.py    # Playwright 브라우저 자동화
+    ├── notion_records.py    # DB 레코드 파싱, 상태 관리
+    ├── request_processor.py # 메인 폴링 루프, 요청 처리 오케스트레이션
+    ├── notifier.py          # 알림 라우팅
+    ├── slack_notifier.py    # Slack API 연동
+    └── page_id.py           # 페이지 ID 파싱/정규화
 ```
+
+### 핵심 설계
+
+- **Async-first** — 모든 I/O가 `async/await` 기반 (httpx, Playwright async API)
+- **2단계 브라우저 세션** — Ephemeral context(빠른 시작) → Persistent context(복구 대체)
+- **멱등성 보장** — 알림 중복 방지 가드, 상태 재확인 후 완료 처리
+- **Graceful shutdown** — SIGINT/SIGTERM 핸들링으로 안전 종료
 
 ## 개발
 
