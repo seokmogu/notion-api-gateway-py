@@ -17,15 +17,14 @@ Notion API 토큰 자동 발급 서비스. 노션 폼에서 신청하면 통합 
 ## 설치
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
+uv sync
 playwright install chromium
 cp .env.example .env  # 환경변수 설정
 ```
 
 ### 요구사항
 
+- [uv](https://docs.astral.sh/uv/) 0.10+
 - Python 3.12+
 - Chromium (Playwright)
 - Notion API 토큰 (Internal Integration)
