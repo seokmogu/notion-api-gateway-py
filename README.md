@@ -26,7 +26,7 @@ Requested → Processing → Issued → 완료
 
 - [uv](https://docs.astral.sh/uv/) 0.10+
 - Python 3.12+
-- Chromium (Playwright가 자동 설치)
+- Chromium (Playwright가 자동 설치, `local` 모드) 또는 AWS 계정 (`remote-bedrock` 모드)
 - Notion API 토큰 (Internal Integration)
 - Slack Bot Token (선택)
 
@@ -227,7 +227,7 @@ NO_SSL_VERIFY=1
 | 디스크 | 500 MB | 1 GB |
 | 네트워크 | 아웃바운드 HTTPS | 아웃바운드 HTTPS |
 
-디스크는 Chromium 바이너리(~200MB) + 브라우저 프로필(~50MB)이 주요 사용량입니다.
+디스크는 Chromium 바이너리(~200MB) + 브라우저 프로필(~50MB)이 주요 사용량입니다. `remote-bedrock` 모드에서는 Chromium이 불필요하여 디스크/메모리 요구량이 줄어듭니다.
 
 ## 운영
 
