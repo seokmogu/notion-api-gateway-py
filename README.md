@@ -34,8 +34,9 @@ Requested → Processing → Issued → 완료
 
 ```bash
 # uv 사용 (권장)
+uv venv
+uv run playwright install chromium
 uv sync
-playwright install chromium
 cp .env.example .env  # 환경변수 설정
 
 # 또는 pip 사용
