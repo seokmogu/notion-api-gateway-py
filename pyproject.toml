@@ -9,6 +9,7 @@ dependencies = [
     "playwright>=1.50",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
+    "bedrock-agentcore",
 ]
 
 [dependency-groups]

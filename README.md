@@ -60,13 +60,15 @@ cp .env.example .env
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `NOTION_BROWSER_PROFILE_DIR` | `./data/notion-browser-profile` | 브라우저 프로필 저장 경로 (persistent context) |
-| `NOTION_HEADLESS` | `true` | 헤드리스 모드 (`false`로 설정 시 브라우저 창 표시) |
+| `BROWSER_CONNECTION` | `local` | 브라우저 백엔드: `local` (로컬 Chromium) 또는 `remote-bedrock` (AWS Bedrock AgentCore) |
+| `NOTION_BROWSER_PROFILE_DIR` | `./data/notion-browser-profile` | 브라우저 프로필 저장 경로 (persistent context, `local` 모드) |
+| `NOTION_HEADLESS` | `true` | 헤드리스 모드 (`false`로 설정 시 브라우저 창 표시, `local` 모드) |
 | `NOTION_INTEGRATION_NAME_PREFIX` | `API Access` | 생성되는 통합 이름 접두사 |
 | `NOTION_WORKSPACE_NAME` | - | 워크스페이스 선택 힌트 (여러 워크스페이스가 있을 때) |
-| `NOTION_EMAIL` | - | 자동 로그인용 이메일 (SSO 미지원) |
-| `NOTION_PASSWORD` | - | 자동 로그인용 비밀번호 |
+| `NOTION_EMAIL` | - | 자동 로그인용 이메일 (SSO 미지원). `remote-bedrock` 시 필수 |
+| `NOTION_PASSWORD` | - | 자동 로그인용 비밀번호. `remote-bedrock` 시 필수 |
 | `NOTION_LOGIN_CODE` | - | 2FA 코드 (자동 로그인 시) |
+| `AWS_DEFAULT_REGION` | - | AWS 리전 (`remote-bedrock` 시 필수) |
 
 ### Slack 알림
 
@@ -168,8 +170,10 @@ notion-gateway -v poll
 
 Playwright가 Notion 웹 UI를 제어하려면 관리자 계정으로 로그인된 브라우저 세션이 필요합니다.
 
+**로컬 브라우저 (`BROWSER_CONNECTION=local`)**
+
 ```bash
-# 로컬에서 인증 (브라우저 창이 열림)
+# 브라우저 창이 열림 — 수동 로그인 또는 NOTION_EMAIL/NOTION_PASSWORD 자동 로그인
 NOTION_HEADLESS=false notion-gateway auth
 ```
 
@@ -178,6 +182,17 @@ NOTION_HEADLESS=false notion-gateway auth
 서버에서 `auth`를 실행하려면:
 - X11 포워딩: `ssh -X user@server` 후 `NOTION_HEADLESS=false notion-gateway auth`
 - VNC/원격 데스크톱 사용
+
+**원격 브라우저 (`BROWSER_CONNECTION=remote-bedrock`)**
+
+```bash
+# 자동 로그인 전용 — NOTION_EMAIL, NOTION_PASSWORD 필수
+BROWSER_CONNECTION=remote-bedrock \
+AWS_DEFAULT_REGION=us-west-2 \
+notion-gateway auth
+```
+
+원격 브라우저는 화면이 없으므로 수동 로그인이 불가합니다. `NOTION_EMAIL`과 `NOTION_PASSWORD`를 반드시 설정하세요.
 
 폴링 중 세션은 **1시간마다 자동 갱신**됩니다. 세션이 만료되면 수동으로 `notion-gateway auth`를 다시 실행하세요.
 
@@ -240,15 +255,19 @@ NO_SSL_VERIFY=1
 ## 아키텍처
 
 - **Playwright** — Notion 웹 UI 자동화 (통합 생성, 토큰 복사, 페이지 연결)
+- **Bedrock AgentCore** — AWS 관리형 원격 브라우저 (클라우드 배포 시 로컬 Chromium 대체)
 - **httpx** — Notion REST API (DB 조회/수정, 페이지 접근 검증)
 - **Pydantic** — 설정 검증 및 데이터 모델
 - **Slack API** — DM 알림 (신청 접수, 발급 완료, 발급 실패)
 
 ### 브라우저 세션 관리
 
-- **Ephemeral context** — `storage-state.json`으로 쿠키 복원 (빠른 시작)
-- **Persistent context** — 브라우저 프로필 디렉토리로 자동 복구 (세션 만료 대응)
-- 1시간마다 자동 세션 갱신
+두 가지 브라우저 백엔드를 지원합니다:
+
+- **`local`** (기본) — 로컬 Chromium. `storage-state.json`으로 쿠키 복원.
+- **`remote-bedrock`** — AWS Bedrock AgentCore 관리형 브라우저. CDP(Chrome DevTools Protocol)로 연결하며, 저장된 쿠키를 원격 세션에 주입. 로컬 Chromium 설치가 불필요하여 컨테이너/서버리스 환경에 적합.
+
+두 모드 모두 1시간마다 자동 세션 갱신됩니다.
 
 ### 프로젝트 구조
 

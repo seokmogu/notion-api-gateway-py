@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
+import os
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from playwright.async_api import BrowserContext, Locator, Page, async_playwright
@@ -33,25 +36,30 @@ async def _first_visible(
     return None
 
 
-async def _launch_persistent_context(headless: bool = True) -> BrowserContext:
-    """Launch a persistent browser context for interactive login."""
+# ---------------------------------------------------------------------------
+# Browser backend abstraction
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _open_browser(
+    storage_state_path: Path | None = None,
+) -> AsyncIterator[tuple[BrowserContext, Page]]:
+    """Yield a (context, page) pair, dispatching to local or remote backend."""
     cfg = get_config()
-    pw = await async_playwright().start()
-    launch_args = []
-    if cfg.no_ssl_verify:
-        launch_args.append("--ignore-certificate-errors")
-    context = await pw.chromium.launch_persistent_context(
-        cfg.notion_browser_profile_dir,
-        headless=headless,
-        viewport=VIEWPORT,
-        locale="en-US",
-        args=launch_args,
-    )
-    return context
+    if cfg.browser_connection == "remote-bedrock":
+        async with _open_remote(storage_state_path) as pair:
+            yield pair
+    else:
+        async with _open_local(storage_state_path) as pair:
+            yield pair
 
 
-async def _launch_ephemeral(storage_state_path: Path) -> tuple[BrowserContext, object]:
-    """Launch an ephemeral browser context using saved storage state."""
+@asynccontextmanager
+async def _open_local(
+    storage_state_path: Path | None = None,
+) -> AsyncIterator[tuple[BrowserContext, Page]]:
+    """Open a local ephemeral Chromium browser with optional storage state."""
     pw = await async_playwright().start()
     cfg = get_config()
     launch_args = ["--start-maximized", "--disable-blink-features=AutomationControlled"]
@@ -61,15 +69,60 @@ async def _launch_ephemeral(storage_state_path: Path) -> tuple[BrowserContext, o
         headless=cfg.notion_headless,
         args=launch_args,
     )
-    context = await browser.new_context(
-        storage_state=str(storage_state_path),
-        viewport=VIEWPORT if cfg.notion_headless else None,
-        locale="en-US",
-    )
+    ctx_kwargs: dict = {
+        "viewport": VIEWPORT if cfg.notion_headless else None,
+        "locale": "en-US",
+    }
+    if storage_state_path and storage_state_path.exists():
+        ctx_kwargs["storage_state"] = str(storage_state_path)
+    context = await browser.new_context(**ctx_kwargs)
     await context.grant_permissions(
         ["clipboard-read", "clipboard-write"], origin="https://www.notion.so"
     )
-    return context, pw
+    try:
+        page = await context.new_page()
+        yield context, page
+    finally:
+        await context.close()
+        await pw.stop()
+
+
+@asynccontextmanager
+async def _open_remote(
+    storage_state_path: Path | None = None,
+) -> AsyncIterator[tuple[BrowserContext, Page]]:
+    """Open a remote browser via Bedrock AgentCore CDP connection."""
+    from bedrock_agentcore.tools.browser_client import browser_session as agentcore_browser_session
+
+    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "")
+    if not region:
+        raise RuntimeError(
+            "AWS_DEFAULT_REGION or AWS_REGION must be set for remote-bedrock browser."
+        )
+    session = agentcore_browser_session(region)
+    client = session.__enter__()
+    try:
+        ws_url, headers = client.generate_ws_headers()
+
+        pw = await async_playwright().start()
+        try:
+            browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
+            context = browser.contexts[0]
+
+            # Inject cookies from saved storage state
+            if storage_state_path and storage_state_path.exists():
+                state = json.loads(storage_state_path.read_text(encoding="utf-8"))
+                if state.get("cookies"):
+                    await context.add_cookies(state["cookies"])
+
+            page = context.pages[0] if context.pages else await context.new_page()
+            yield context, page
+
+            await context.close()
+        finally:
+            await pw.stop()
+    finally:
+        session.__exit__(None, None, None)
 
 
 async def _is_logged_in(page: Page) -> bool:
@@ -188,14 +241,6 @@ async def _handle_login(page: Page) -> None:
         raise RuntimeError("Login appears to have failed. Run 'notion-gateway auth' manually.")
 
     logger.info("Login successful")
-
-
-async def _login_if_needed(page: Page, context: BrowserContext, storage_path: Path) -> None:
-    """Ensure the browser is logged into Notion."""
-    if await _is_logged_in(page):
-        logger.debug("Already logged in")
-        return
-    raise RuntimeError("Session expired. Run 'notion-gateway auth' to re-authenticate.")
 
 
 async def _ensure_integration_exists(page: Page, integration_name: str) -> None:
@@ -557,52 +602,13 @@ async def provision_token_for_page(
     cfg = get_config()
     storage_path = cfg.storage_state_path
 
-    # Phase 1: Try ephemeral browser with saved storage state
-    if storage_path.exists():
-        try:
-            context, pw = await _launch_ephemeral(storage_path)
-            try:
-                page = await context.new_page()
-                if await _is_logged_in(page):
-                    logger.info("Ephemeral session valid, proceeding")
-                    await _ensure_integration_exists(page, integration_name)
-                    token = await _copy_integration_token(page)
-                    await context.storage_state(path=str(storage_path))
-                    return ProvisioningResult(token=token, integration_name=integration_name)
-                else:
-                    logger.warning("Ephemeral session expired, falling back to persistent context")
-            finally:
-                await context.close()
-                await pw.stop()  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning("Ephemeral session failed: %s. Falling back to persistent context.", e)
-
-    # Phase 2: Persistent context fallback
-    logger.info("Using persistent context for provisioning")
-    launch_args: list[str] = []
-    if cfg.no_ssl_verify:
-        launch_args.append("--ignore-certificate-errors")
-    pw2 = await async_playwright().start()
-    context2 = await pw2.chromium.launch_persistent_context(
-        cfg.notion_browser_profile_dir,
-        headless=cfg.notion_headless,
-        viewport=VIEWPORT,
-        locale="en-US",
-        args=launch_args,
-    )
-    try:
-        page2 = await context2.new_page()
-        if not await _is_logged_in(page2):
-            raise RuntimeError(
-                "Not logged in. Run 'notion-gateway auth' to bootstrap a session."
-            )
-        await _ensure_integration_exists(page2, integration_name)
-        token = await _copy_integration_token(page2)
-        await context2.storage_state(path=str(storage_path))
+    async with _open_browser(storage_path) as (context, page):
+        if not await _is_logged_in(page):
+            raise RuntimeError("Not logged in. Run 'notion-gateway auth' to bootstrap a session.")
+        await _ensure_integration_exists(page, integration_name)
+        token = await _copy_integration_token(page)
+        await context.storage_state(path=str(storage_path))
         return ProvisioningResult(token=token, integration_name=integration_name)
-    finally:
-        await context2.close()
-        await pw2.stop()
 
 
 async def connect_integration_to_page(
@@ -613,19 +619,52 @@ async def connect_integration_to_page(
     cfg = get_config()
     storage_path = cfg.storage_state_path
 
-    context, pw = await _launch_ephemeral(storage_path)
-    try:
-        page = await context.new_page()
+    async with _open_browser(storage_path) as (_context, page):
         return await _connect_integration_to_page(page, page_url, integration_name)
-    finally:
-        await context.close()
-        await pw.stop()  # type: ignore[union-attr]
 
 
 async def bootstrap_admin_session() -> None:
-    """Launch an interactive browser for manual login."""
+    """Launch a browser and log in to Notion to bootstrap a session."""
     cfg = get_config()
-    context = await _launch_persistent_context(headless=False)
+
+    if cfg.browser_connection == "remote-bedrock":
+        await _bootstrap_remote(cfg)
+    else:
+        await _bootstrap_local(cfg)
+
+
+async def _bootstrap_remote(cfg: object) -> None:
+    """Bootstrap session via Bedrock AgentCore (auto-login only)."""
+    from notion_gateway.config import AppConfig
+
+    assert isinstance(cfg, AppConfig)
+    if not cfg.notion_email or not cfg.notion_password:
+        raise RuntimeError(
+            "Remote browser requires NOTION_EMAIL and NOTION_PASSWORD for automatic login."
+        )
+
+    async with _open_remote() as (_context, page):
+        await _handle_login(page)
+        await _context.storage_state(path=str(cfg.storage_state_path))
+        logger.info("Remote auto-login successful, session saved to %s", cfg.storage_state_path)
+
+
+async def _bootstrap_local(cfg: object) -> None:
+    """Bootstrap session via local persistent browser (interactive login)."""
+    from notion_gateway.config import AppConfig
+
+    assert isinstance(cfg, AppConfig)
+    pw = await async_playwright().start()
+    launch_args: list[str] = []
+    if cfg.no_ssl_verify:
+        launch_args.append("--ignore-certificate-errors")
+    context = await pw.chromium.launch_persistent_context(
+        cfg.notion_browser_profile_dir,
+        headless=False,
+        viewport=VIEWPORT,
+        locale="en-US",
+        args=launch_args,
+    )
     try:
         page = await context.new_page()
         await page.goto(INTEGRATIONS_URL, wait_until="domcontentloaded", timeout=60_000)
@@ -649,9 +688,7 @@ async def bootstrap_admin_session() -> None:
         for i in range(100):
             try:
                 url = page.url
-                # If URL moved away from login page, user might be logged in
                 if "/login" not in url and "notion.so" in url:
-                    # Navigate to integrations to confirm
                     if await _is_logged_in(page):
                         await context.storage_state(path=str(cfg.storage_state_path))
                         print(f"\nSession saved to {cfg.storage_state_path}")
@@ -666,6 +703,7 @@ async def bootstrap_admin_session() -> None:
         raise RuntimeError("Login timeout (5min). Please try again.")
     finally:
         await context.close()
+        await pw.stop()
 
 
 async def refresh_session() -> bool:
@@ -676,15 +714,10 @@ async def refresh_session() -> bool:
         logger.warning("No saved session found at %s", storage_path)
         return False
 
-    context, pw = await _launch_ephemeral(storage_path)
-    try:
-        page = await context.new_page()
+    async with _open_browser(storage_path) as (context, page):
         if await _is_logged_in(page):
             await context.storage_state(path=str(storage_path))
             logger.info("Session refreshed successfully")
             return True
         logger.warning("Session expired, manual re-authentication required")
         return False
-    finally:
-        await context.close()
-        await pw.stop()  # type: ignore[union-attr]
