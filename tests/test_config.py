@@ -38,6 +38,7 @@ class TestAppConfig:
     def test_optional_slack(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NOTION_TOKEN", "ntn_test")
         monkeypatch.setenv("NOTION_REQUESTS_DATABASE_ID", "db-123")
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         cfg = AppConfig()  # type: ignore[call-arg]
         assert cfg.slack_bot_token is None
 

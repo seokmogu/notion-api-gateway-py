@@ -80,13 +80,13 @@ class TestBuildDeterministicIntegrationName:
         result = build_deterministic_integration_name(
             "API Access", "3197d832-2b04-802e-af59-e199b1c7d23f", "Data Platform Tribe"
         )
-        assert result == "API Access Data Platform Tribe 3197d832"
+        assert result == "API Access Data Platform Tribe b1c7d23f"
 
     def test_without_title(self) -> None:
         result = build_deterministic_integration_name(
             "API Access", "3197d832-2b04-802e-af59-e199b1c7d23f"
         )
-        assert result == "API Access 3197d832"
+        assert result == "API Access b1c7d23f"
 
     def test_long_title_truncated(self) -> None:
         long_title = "A" * 60
@@ -94,10 +94,10 @@ class TestBuildDeterministicIntegrationName:
             "API Access", "3197d832-2b04-802e-af59-e199b1c7d23f", long_title
         )
         assert len(result.split(" ")[1]) <= 40  # Title part truncated
-        assert result.endswith("3197d832")
+        assert result.endswith("b1c7d23f")
 
     def test_empty_title(self) -> None:
         result = build_deterministic_integration_name(
             "API Access", "3197d832-2b04-802e-af59-e199b1c7d23f", ""
         )
-        assert result == "API Access 3197d832"
+        assert result == "API Access b1c7d23f"

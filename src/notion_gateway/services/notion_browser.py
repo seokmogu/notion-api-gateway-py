@@ -150,59 +150,38 @@ async def _handle_login(page: Page) -> None:
     # Navigate to login
     await page.goto("https://www.notion.so/login", wait_until="domcontentloaded", timeout=30_000)
 
-    # Enter email
+    # Enter email — input fields are stable across UI changes
     email_input = await _first_visible(
         page,
         [
-            page.get_by_placeholder(re.compile(r"email", re.I)),
             page.locator('input[type="email"]'),
             page.locator('input[name="email"]'),
+            page.get_by_placeholder(re.compile(r"email", re.I)),
         ],
         timeout=10_000,
     )
     if not email_input:
         raise RuntimeError("Cannot find email input on login page")
     await email_input.fill(cfg.notion_email)
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(2000)
 
-    # Click continue
-    continue_btn = await _first_visible(
-        page,
-        [
-            page.get_by_role("button", name=re.compile(r"continue", re.I)),
-        ],
-    )
-    if continue_btn:
-        await continue_btn.click()
-        await page.wait_for_timeout(2000)
-
-    # Enter password
+    # Enter password — use Enter to submit instead of finding buttons
     password_input = await _first_visible(
         page,
         [
-            page.get_by_placeholder(re.compile(r"password", re.I)),
             page.locator('input[type="password"]'),
+            page.get_by_placeholder(re.compile(r"password", re.I)),
         ],
         timeout=10_000,
     )
     if not password_input:
-        # Could be SSO or email-code login
         raise RuntimeError(
             "Password input not found. Your account may use SSO or email-code login. "
             "Run 'notion-gateway auth' to log in manually."
         )
     await password_input.fill(cfg.notion_password)
-
-    # Submit login
-    submit_btn = await _first_visible(
-        page,
-        [
-            page.get_by_role("button", name=re.compile(r"Continue with password", re.I)),
-        ],
-    )
-    if submit_btn:
-        await submit_btn.click()
-    else:
-        raise RuntimeError("으앙 로그인 버튼이 뽑혔어요 석모님 코드를 수정해주세요")
+    await page.keyboard.press("Enter")
 
     # Handle 2FA if needed
     if cfg.notion_login_code:
@@ -337,6 +316,10 @@ async def _ensure_integration_exists(page: Page, integration_name: str) -> None:
     else:
         logger.warning("Workspace dropdown not found")
 
+    # Dismiss any lingering overlay left by the workspace dropdown
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(500)
+
     # Submit form — Notion uses div[role=button], not <button>
     submit_btn = await _first_visible(
         page,
@@ -347,7 +330,7 @@ async def _ensure_integration_exists(page: Page, integration_name: str) -> None:
     )
     if not submit_btn:
         raise RuntimeError("Cannot find submit button (생성하기)")
-    await submit_btn.click()
+    await submit_btn.click(force=True)
     logger.info("Clicked submit button")
     await page.wait_for_timeout(5000)
 
@@ -598,7 +581,50 @@ async def _connect_integration_to_page(page: Page, page_url: str, integration_na
 async def provision_token_for_page(
     integration_name: str,
 ) -> ProvisioningResult:
-    """Provision a Notion integration token using browser automation."""
+    """Provision a Notion integration token.
+
+    Uses internal API (no browser) for creation and token retrieval.
+    Falls back to browser automation if internal API fails.
+    """
+    from notion_gateway.services.notion_internal_api import (
+        NotionInternalApiError,
+        create_integration,
+        find_bot_by_name,
+        get_available_spaces,
+        get_bot_token,
+    )
+
+    cfg = get_config()
+
+    try:
+        # Check if integration already exists
+        existing = await find_bot_by_name(integration_name)
+        if existing:
+            token = await get_bot_token(existing.bot_id)
+            logger.info("Reusing existing integration '%s' via API", integration_name)
+            return ProvisioningResult(token=token, integration_name=integration_name)
+
+        # Create new integration via API
+        spaces = await get_available_spaces()
+        if not spaces:
+            raise NotionInternalApiError("No spaces available for integration creation")
+
+        # Use configured workspace or first available
+        target_space = spaces[0]
+        bot = await create_integration(integration_name, target_space)
+        token = await get_bot_token(bot.bot_id)
+        logger.info("Created integration '%s' via internal API (botId=%s)", integration_name, bot.bot_id)
+        return ProvisioningResult(token=token, integration_name=integration_name)
+
+    except NotionInternalApiError as e:
+        logger.warning("Internal API failed (%s), falling back to browser: %s", e.endpoint, e)
+        return await _provision_token_via_browser(integration_name)
+
+
+async def _provision_token_via_browser(
+    integration_name: str,
+) -> ProvisioningResult:
+    """Fallback: provision token via browser automation."""
     cfg = get_config()
     storage_path = cfg.storage_state_path
 

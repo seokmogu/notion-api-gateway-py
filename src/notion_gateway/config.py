@@ -97,12 +97,13 @@ _config: AppConfig | None = None
 def get_config(env_file: str = ".env") -> AppConfig:
     global _config
     if _config is None:
-        # .env file values override system env vars (matching TS behavior)
-        # Resolve .env relative to project root, not CWD
+        # Layer 1: .env.shared (committed defaults), Layer 2: .env (gitignored secrets)
         env_path = _PROJECT_ROOT / env_file
+        shared_path = _PROJECT_ROOT / ".env.shared"
         init_kwargs: dict[str, Any] = {}
-        dotenv = _load_dotenv(env_path)
-        for key, value in dotenv.items():
+        for key, value in _load_dotenv(shared_path).items():
+            init_kwargs[key.lower()] = value
+        for key, value in _load_dotenv(env_path).items():
             init_kwargs[key.lower()] = value
         _config = AppConfig(**init_kwargs)  # type: ignore[arg-type]
     return _config

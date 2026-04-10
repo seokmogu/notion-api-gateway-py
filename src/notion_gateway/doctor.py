@@ -108,6 +108,19 @@ async def run_doctor() -> None:
         _fail(f"Cannot access requests database: {e}")
         all_ok = False
 
+    # 10. Internal API (session-based)
+    try:
+        from notion_gateway.services.notion_internal_api import health_check
+
+        results = await health_check()
+        for key, status in results.items():
+            if "ok" in str(status):
+                _ok(f"Internal API {key}: {status}")
+            else:
+                _warn(f"Internal API {key}: {status}")
+    except Exception as e:
+        _warn(f"Internal API check skipped: {e}")
+
     print()
     if all_ok:
         print("\033[32mAll checks passed!\033[0m")

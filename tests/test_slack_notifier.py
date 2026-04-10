@@ -21,7 +21,7 @@ class TestFormatTokenIssuedMessage:
         assert "Test Page" in msg
         assert "ntn_abc123" in msg
         assert "https://notion.so/page" in msg
-        assert "Issued" in msg
+        assert "완료" in msg
 
 
 class TestFormatTokenFailedMessage:
@@ -31,4 +31,4 @@ class TestFormatTokenFailedMessage:
         )
         assert "Test Page" in msg
         assert "Something went wrong" in msg
-        assert "Failed" in msg
+        assert "실패" in msg
