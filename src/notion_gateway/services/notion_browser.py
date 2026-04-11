@@ -580,11 +580,18 @@ async def _connect_integration_to_page(page: Page, page_url: str, integration_na
 
 async def provision_token_for_page(
     integration_name: str,
+    target_space_id: str | None = None,
 ) -> ProvisioningResult:
     """Provision a Notion integration token.
 
     Uses internal API (no browser) for creation and token retrieval.
     Falls back to browser automation if internal API fails.
+
+    Args:
+        integration_name: Integration name
+        target_space_id: Workspace to create the bot in. MUST match the target
+            page's workspace, otherwise connection will fail with
+            "Cannot add bot permission for a bot from a different workspace".
     """
     from notion_gateway.services.notion_internal_api import (
         NotionInternalApiError,
@@ -594,27 +601,54 @@ async def provision_token_for_page(
         get_bot_token,
     )
 
-    cfg = get_config()
-
     try:
         # Check if integration already exists
         existing = await find_bot_by_name(integration_name)
         if existing:
-            token = await get_bot_token(existing.bot_id)
-            logger.info("Reusing existing integration '%s' via API", integration_name)
-            return ProvisioningResult(token=token, integration_name=integration_name)
+            # Guard: if an existing integration is in the wrong workspace, it can't connect
+            if target_space_id and existing.space_id and existing.space_id != target_space_id:
+                logger.warning(
+                    "Existing integration '%s' is in space %s but page is in %s, creating a new one",
+                    integration_name, existing.space_id, target_space_id,
+                )
+            else:
+                token = await get_bot_token(existing.bot_id)
+                logger.info("Reusing existing integration '%s' via API", integration_name)
+                return ProvisioningResult(
+                    token=token,
+                    integration_name=integration_name,
+                    bot_id=existing.bot_id,
+                    space_id=existing.space_id,
+                )
 
-        # Create new integration via API
-        spaces = await get_available_spaces()
-        if not spaces:
-            raise NotionInternalApiError("No spaces available for integration creation")
+        # Choose workspace
+        if target_space_id:
+            # Verify user can create integrations in this space
+            spaces = await get_available_spaces()
+            if target_space_id not in spaces:
+                raise NotionInternalApiError(
+                    f"User cannot create integrations in target space {target_space_id}. "
+                    f"Available spaces: {spaces}"
+                )
+            chosen_space = target_space_id
+        else:
+            spaces = await get_available_spaces()
+            if not spaces:
+                raise NotionInternalApiError("No spaces available for integration creation")
+            chosen_space = spaces[0]
 
-        # Use configured workspace or first available
-        target_space = spaces[0]
-        bot = await create_integration(integration_name, target_space)
+        bot = await create_integration(integration_name, chosen_space)
         token = await get_bot_token(bot.bot_id)
-        logger.info("Created integration '%s' via internal API (botId=%s)", integration_name, bot.bot_id)
-        return ProvisioningResult(token=token, integration_name=integration_name)
+        logger.info(
+            "Created integration '%s' via internal API (botId=%s, space=%s)",
+            integration_name, bot.bot_id, chosen_space,
+        )
+        return ProvisioningResult(
+            token=token,
+            integration_name=integration_name,
+            bot_id=bot.bot_id,
+            space_id=bot.space_id or chosen_space,
+        )
 
     except NotionInternalApiError as e:
         logger.warning("Internal API failed (%s), falling back to browser: %s", e.endpoint, e)
@@ -640,8 +674,76 @@ async def _provision_token_via_browser(
 async def connect_integration_to_page(
     page_url: str,
     integration_name: str,
+    bot_id: str | None = None,
+    space_id: str | None = None,
 ) -> bool:
-    """Connect an integration to a page using a separate browser instance."""
+    """Connect an integration to a page.
+
+    Uses internal API (no browser) via saveTransactionsFanout.
+    Falls back to browser automation if the internal API fails.
+
+    Args:
+        page_url: Notion page URL
+        integration_name: Integration name (used for fallback lookup)
+        bot_id: Optional bot ID from provisioning (skips name lookup)
+        space_id: Optional space ID from provisioning
+    """
+    from notion_gateway.services.notion_internal_api import (
+        NotionInternalApiError,
+        connect_bot_to_page,
+        find_bot_by_name,
+        get_page_space_id,
+    )
+    from notion_gateway.services.page_id import extract_canonical_page_id
+
+    try:
+        page_id = extract_canonical_page_id(page_url)
+
+        # Use provided bot info, or look up by name
+        if not bot_id:
+            bot = await find_bot_by_name(integration_name)
+            if not bot:
+                logger.warning(
+                    "Integration '%s' not found via internal API, falling back to browser",
+                    integration_name,
+                )
+                return await _connect_via_browser(page_url, integration_name)
+            bot_id = bot.bot_id
+            space_id = space_id or bot.space_id
+
+        if not space_id:
+            space_id = await get_page_space_id(page_id)
+        if not space_id:
+            logger.warning("Could not determine space_id, falling back to browser")
+            return await _connect_via_browser(page_url, integration_name)
+
+        await connect_bot_to_page(bot_id, page_id, space_id)
+        return True
+
+    except NotionInternalApiError as e:
+        msg = str(e)
+        # Permission errors are not retryable — don't fall back to browser
+        if "Non-admin" in msg or "permission" in msg.lower() or "unauthorized" in msg.lower():
+            logger.error(
+                "Cannot connect integration: user lacks admin rights on the page. "
+                "The page owner must add the integration manually."
+            )
+            raise RuntimeError(
+                "페이지 관리자 권한 없음: 해당 페이지는 현재 사용자가 관리자가 아니어서 "
+                "통합을 자동 연결할 수 없습니다. 페이지 소유자가 수동으로 연결해야 합니다."
+            ) from e
+        logger.warning("Internal API connect failed (%s): %s, falling back to browser", e.endpoint, e)
+        return await _connect_via_browser(page_url, integration_name)
+    except ValueError as e:
+        logger.error("Invalid page URL: %s", e)
+        return False
+
+
+async def _connect_via_browser(
+    page_url: str,
+    integration_name: str,
+) -> bool:
+    """Fallback: connect integration via browser automation."""
     cfg = get_config()
     storage_path = cfg.storage_state_path
 

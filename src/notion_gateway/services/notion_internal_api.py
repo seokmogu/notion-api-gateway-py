@@ -182,6 +182,90 @@ async def delete_bot(bot_id: str) -> None:
     logger.info("Deleted bot %s", bot_id)
 
 
+async def connect_bot_to_page(bot_id: str, page_id: str, space_id: str) -> None:
+    """Grant a bot access to a specific page.
+
+    Equivalent to: Actions > Connections > Add connection in the Notion UI.
+    API: POST /api/v3/saveTransactionsFanout with setPermissionItem command.
+
+    Args:
+        bot_id: The integration bot ID (from create_integration)
+        page_id: The canonical Notion page ID (UUID format)
+        space_id: The workspace ID where the page lives
+    """
+    import time
+    import uuid
+
+    endpoint = "saveTransactionsFanout"
+    now_ms = int(time.time() * 1000)
+    body = {
+        "requestId": str(uuid.uuid4()),
+        "transactions": [
+            {
+                "id": str(uuid.uuid4()),
+                "spaceId": space_id,
+                "debug": {"userAction": "NotionGateway.connectBotToPage"},
+                "operations": [
+                    {
+                        "pointer": {
+                            "id": page_id,
+                            "table": "block",
+                            "spaceId": space_id,
+                        },
+                        "command": "setPermissionItem",
+                        "path": ["permissions"],
+                        "args": {
+                            "type": "bot_permission",
+                            "bot_id": bot_id,
+                            "parent_id": space_id,
+                            "parent_table": "space",
+                            "role": {
+                                "read_comment": True,
+                                "read_content": True,
+                                "insert_comment": True,
+                                "insert_content": True,
+                                "update_content": True,
+                            },
+                        },
+                    },
+                    {
+                        "pointer": {
+                            "id": page_id,
+                            "table": "block",
+                            "spaceId": space_id,
+                        },
+                        "path": [],
+                        "command": "update",
+                        "args": {
+                            "last_edited_time": now_ms,
+                        },
+                    },
+                ],
+            }
+        ],
+        "unretryable_error_behavior": "continue",
+    }
+
+    data, status = await _internal_post(endpoint, body)
+    if status >= 400:
+        _validate_response(endpoint, data, [], status)
+    logger.info("Connected bot %s to page %s", bot_id, page_id)
+
+
+async def get_page_space_id(page_id: str) -> str | None:
+    """Look up the space_id for a given page via getPublicPageData.
+
+    API: POST /api/v3/getPublicPageData
+    """
+    endpoint = "getPublicPageData"
+    data, status = await _internal_post(endpoint, {"type": "block-space", "blockId": page_id})
+    if status >= 400:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("spaceId")
+
+
 async def get_available_spaces() -> list[str]:
     """Get space IDs where the user can create integrations.
 
@@ -207,7 +291,11 @@ async def list_bots() -> list[BotInfo]:
 
     result = []
     for bot_id in data["botIds"]:
-        record = bot_records.get(bot_id, {}).get("value", {})
+        raw = bot_records.get(bot_id, {}).get("value", {})
+        # Notion wraps records as {value: {value: {...}, role: ...}} — unwrap if nested
+        record = raw.get("value", raw) if isinstance(raw, dict) and "value" in raw else raw
+        if not isinstance(record, dict):
+            continue
         result.append(
             BotInfo(
                 bot_id=bot_id,

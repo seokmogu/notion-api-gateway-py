@@ -37,10 +37,12 @@ class TokenRecord:
 
 @dataclass
 class ProvisioningResult:
-    """Result of browser-based token provisioning."""
+    """Result of token provisioning (via internal API or browser)."""
 
     token: str
     integration_name: str
+    bot_id: str | None = None
+    space_id: str | None = None
 
 
 class NotionApiError(Exception):

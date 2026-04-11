@@ -130,14 +130,23 @@ async def process_one_request(record: RequestRecord) -> None:
             return
         logger.info("Existing token for page %s is invalid; reprovisioning", canonical_page_id)
 
-    # 3. Provision new token via browser
+    # 3. Provision new token via internal API
     integration_name = build_deterministic_integration_name(
         cfg.notion_integration_name_prefix,
         canonical_page_id,
         record.organization,
     )
 
-    result = await provision_token_for_page(integration_name)
+    # Look up the page's actual workspace so the bot gets created in the same space
+    # (bots cannot grant permissions on pages in other workspaces)
+    from notion_gateway.services.notion_internal_api import get_page_space_id
+    target_space_id = None
+    try:
+        target_space_id = await get_page_space_id(canonical_page_id)
+    except Exception as e:
+        logger.warning("Could not resolve page space_id: %s", e)
+
+    result = await provision_token_for_page(integration_name, target_space_id=target_space_id)
 
     # 4. Persist token immediately (prevents orphaned tokens on subsequent network error)
     await mark_request_issued(
@@ -149,8 +158,14 @@ async def process_one_request(record: RequestRecord) -> None:
 
     # 5. Connect integration to page
     connected = False
+    permission_denied = False
     try:
-        connected = await connect_integration_to_page(page_url, integration_name)
+        connected = await connect_integration_to_page(
+            page_url,
+            integration_name,
+            bot_id=result.bot_id,
+            space_id=result.space_id,
+        )
         if connected:
             await mark_request_connected(record.id)
             try:
@@ -158,12 +173,25 @@ async def process_one_request(record: RequestRecord) -> None:
                     logger.info("Connection verified for page %s", canonical_page_id)
             except Exception:
                 logger.warning("Network error verifying connection for page %s", canonical_page_id)
+    except RuntimeError as e:
+        # Permission errors are terminal — mark as failed with clear message
+        msg = str(e)
+        if "관리자 권한 없음" in msg or "Non-admin" in msg:
+            permission_denied = True
+            logger.error("Permission denied for %s: %s", record.id, msg)
+            await mark_request_failed(record.id, msg, record.retry_count)
+            if record.retry_count + 1 >= MAX_RETRY_COUNT:
+                await notify_failure(record.id, msg)
+        else:
+            logger.warning("Failed to connect integration to page: %s", e)
     except Exception as e:
         logger.warning("Failed to connect integration to page: %s", e)
 
     # 6. Complete only if connected; otherwise leave as Issued for retry
     if connected:
         await _notify_and_complete(record.id)
+    elif permission_denied:
+        logger.info("Request %s marked as failed (permission denied)", record.id)
     else:
         logger.info("Connection failed for %s — staying as Issued for retry", record.id)
 
