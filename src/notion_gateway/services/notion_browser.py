@@ -723,7 +723,7 @@ async def connect_integration_to_page(
     except NotionInternalApiError as e:
         msg = str(e)
         # Permission errors are not retryable — don't fall back to browser
-        if "Non-admin" in msg or "permission" in msg.lower() or "unauthorized" in msg.lower():
+        if any(k in msg for k in ["Non-admin", "does not have edit access", "different workspace"]) or "permission" in msg.lower() or "unauthorized" in msg.lower():
             logger.error(
                 "Cannot connect integration: user lacks admin rights on the page. "
                 "The page owner must add the integration manually."
