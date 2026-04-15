@@ -88,7 +88,11 @@ async def notify_requester(request_page_id: str) -> None:
         logger.error("Failed to send notifications for %s: %s", request_page_id, e)
 
 
-async def notify_failure(request_page_id: str, error_message: str) -> None:
+async def notify_failure(
+    request_page_id: str,
+    error_message: str,
+    integration_name: str | None = None,
+) -> None:
     """Send failure notifications via Slack."""
     try:
         page = await retrieve_page(request_page_id)
@@ -100,7 +104,9 @@ async def notify_failure(request_page_id: str, error_message: str) -> None:
 
         # Slack DM to requester
         if requester_email and is_slack_configured():
-            message = format_token_failed_message(title, error_message, page_url)
+            message = format_token_failed_message(
+                title, error_message, page_url, integration_name
+            )
             await send_slack_dm(requester_email, message)
 
         # Admin notification

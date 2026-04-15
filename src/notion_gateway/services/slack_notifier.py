@@ -104,11 +104,58 @@ def format_token_issued_message(title: str, token: str, page_url: str) -> str:
     )
 
 
-def format_token_failed_message(title: str, error: str, page_url: str) -> str:
+ADMIN_CONTACT = "seokmogu@worxphere.ai"
+
+
+def classify_user_error(error: str, integration_name: str | None = None) -> str:
+    """Translate a raw exception message into a user-facing Korean explanation.
+
+    Returns an actionable sentence the requester can act on. Falls back to the
+    original message when no pattern matches so nothing is lost.
+    """
+    lower = error.lower()
+    integ = integration_name or "(생성된 통합)"
+
+    if "관리자 권한 없음" in error or "non-admin" in lower or "lacks admin" in lower:
+        return (
+            "이 페이지는 개인 페이지이거나 현재 요청자가 페이지 관리자가 아니라 "
+            "자동 연결이 불가합니다. 페이지 소유자가 페이지 우측 상단 "
+            "‘...’ → ‘연결’ 메뉴에서 통합 "
+            f"`{integ}` 을(를) 직접 추가해 주세요."
+        )
+    if "does not have edit access" in lower:
+        return (
+            "요청자에게 해당 페이지의 편집 권한이 없습니다. "
+            "페이지 소유자에게 ‘편집 가능’ 권한을 받은 뒤 다시 요청해 주세요."
+        )
+    if "different workspace" in lower or "cannot add bot permission" in lower:
+        return (
+            "페이지가 다른 워크스페이스에 있어 자동 연결이 불가합니다. "
+            f"관리자({ADMIN_CONTACT})에게 문의해 주세요."
+        )
+    if "session expired" in lower or "unauthorized" in lower:
+        return "시스템 점검 중입니다. 잠시 후 자동으로 재처리됩니다."
+    if "aws_region" in lower or "aws_default_region" in lower:
+        return "일시적 시스템 설정 오류입니다. 관리자에게 자동 전달되었습니다."
+    if "token input was not found" in lower or "could not retrieve integration token" in lower:
+        return (
+            "Notion 페이지 구조 변경으로 인한 일시적인 오류입니다. "
+            "관리자에게 자동 전달되었습니다."
+        )
+    return error
+
+
+def format_token_failed_message(
+    title: str,
+    error: str,
+    page_url: str,
+    integration_name: str | None = None,
+) -> str:
+    user_msg = classify_user_error(error, integration_name)
     return (
         f":warning: *Notion API 토큰 발급 실패*\n\n"
         f"*조직명:* {title}\n"
-        f"*오류:* {error}\n"
+        f"*사유:* {user_msg}\n"
         f"*페이지:* {page_url}\n\n"
-        f"관리자가 확인 후 다시 처리할 예정입니다."
+        f"해결되지 않는 경우 관리자({ADMIN_CONTACT})에게 문의해 주세요."
     )

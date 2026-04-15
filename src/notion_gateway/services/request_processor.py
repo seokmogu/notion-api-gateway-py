@@ -181,7 +181,7 @@ async def process_one_request(record: RequestRecord) -> None:
             logger.error("Permission denied for %s: %s", record.id, msg)
             await mark_request_failed(record.id, msg, record.retry_count)
             if record.retry_count + 1 >= MAX_RETRY_COUNT:
-                await notify_failure(record.id, msg)
+                await notify_failure(record.id, msg, integration_name=integration_name)
         else:
             logger.warning("Failed to connect integration to page: %s", e)
     except Exception as e:
