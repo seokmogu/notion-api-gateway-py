@@ -10,7 +10,11 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "bedrock-agentcore",
+    "slack-native-toolkit",
 ]
+
+[tool.uv.sources]
+slack-native-toolkit = { git = "https://git.jobkorea.co.kr/seokmogu/slack-native-toolkit.git", branch = "main" }
 
 [dependency-groups]
 dev = [

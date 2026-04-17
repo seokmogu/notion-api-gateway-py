@@ -1,18 +1,19 @@
-"""Slack API integration for DM notifications."""
+"""Slack DM notifications via slack-native-toolkit."""
 
 from __future__ import annotations
 
 import logging
 
 import httpx
+from slack_native_toolkit import AsyncSlackClient, SlackError
 
 from notion_gateway.config import get_config
 
 logger = logging.getLogger(__name__)
 
-SLACK_API_BASE = "https://slack.com/api"
+ADMIN_CONTACT = "seokmogu@worxphere.ai"
 
-# Domain aliases for email lookup fallback
+# Domain aliases for email lookup fallback when the primary lookup fails.
 DOMAIN_ALIASES: dict[str, str] = {
     "worxphere.ai": "jobkorea.co.kr",
     "jobkorea.co.kr": "worxphere.ai",
@@ -23,57 +24,52 @@ def is_slack_configured() -> bool:
     return get_config().slack_bot_token is not None
 
 
-async def _slack_api(method: str, body: dict[str, str | bool]) -> dict:
-    """Call a Slack Web API method."""
+def _make_client() -> AsyncSlackClient:
     cfg = get_config()
     if not cfg.slack_bot_token:
         raise RuntimeError("SLACK_BOT_TOKEN is not configured")
-
-    async with httpx.AsyncClient(timeout=15.0, verify=not cfg.no_ssl_verify) as client:
-        response = await client.post(
-            f"{SLACK_API_BASE}/{method}",
-            headers={"Authorization": f"Bearer {cfg.slack_bot_token}"},
-            data=body,
-        )
-        data = response.json()
-        if not data.get("ok"):
-            error = data.get("error", "unknown_error")
-            logger.error("Slack API %s failed: %s", method, error)
-            raise RuntimeError(f"Slack API error: {error}")
-        return data
-
-
-async def _lookup_by_email(email: str) -> str | None:
-    """Look up a Slack user ID by email."""
-    try:
-        data = await _slack_api("users.lookupByEmail", {"email": email})
-        return data.get("user", {}).get("id")
-    except RuntimeError:
-        return None
+    http = httpx.AsyncClient(
+        base_url="https://slack.com/api",
+        headers={"Authorization": f"Bearer {cfg.slack_bot_token}"},
+        timeout=15.0,
+        verify=not cfg.no_ssl_verify,
+    )
+    return AsyncSlackClient(cfg.slack_bot_token, client=http)
 
 
 async def lookup_slack_user_by_email(email: str) -> str | None:
-    """Look up a Slack user by email, trying domain aliases if needed."""
-    user_id = await _lookup_by_email(email)
-    if user_id:
-        return user_id
+    """Return the Slack user id for an email, trying alias domains on miss."""
+    async with _make_client() as cli:
+        try:
+            primary = await cli.users_lookup_by_email(email)
+        except SlackError as exc:
+            logger.error("users.lookupByEmail %s failed: %s", email, exc.code or exc)
+            return None
+        if primary and primary.get("user", {}).get("id"):
+            return primary["user"]["id"]
 
-    # Try domain alias
-    local, _, domain = email.partition("@")
-    alias_domain = DOMAIN_ALIASES.get(domain)
-    if alias_domain:
+        local, _, domain = email.partition("@")
+        alias_domain = DOMAIN_ALIASES.get(domain)
+        if not alias_domain:
+            logger.warning("Slack user not found for email: %s", email)
+            return None
+
         alias_email = f"{local}@{alias_domain}"
         logger.debug("Trying alias email: %s", alias_email)
-        user_id = await _lookup_by_email(alias_email)
-        if user_id:
-            return user_id
+        try:
+            alias = await cli.users_lookup_by_email(alias_email)
+        except SlackError as exc:
+            logger.error("users.lookupByEmail %s failed: %s", alias_email, exc.code or exc)
+            return None
+        if alias and alias.get("user", {}).get("id"):
+            return alias["user"]["id"]
 
-    logger.warning("Slack user not found for email: %s", email)
-    return None
+        logger.warning("Slack user not found for email: %s", email)
+        return None
 
 
 async def send_slack_dm(email: str, message: str) -> bool:
-    """Send a Slack DM to a user identified by email."""
+    """Send a Slack DM to the user identified by `email`. Returns True on success."""
     if not is_slack_configured():
         logger.debug("Slack not configured, skipping DM")
         return False
@@ -83,15 +79,17 @@ async def send_slack_dm(email: str, message: str) -> bool:
         return False
 
     try:
-        await _slack_api(
-            "chat.postMessage",
-            {"channel": user_id, "text": message, "unfurl_links": False},
-        )
-        logger.info("Slack DM sent to %s", email)
-        return True
-    except RuntimeError as e:
-        logger.error("Failed to send Slack DM to %s: %s", email, e)
+        async with _make_client() as cli:
+            await cli.post_message(user_id, text=message, unfurl_links=False)
+    except SlackError as exc:
+        logger.error("Failed to send Slack DM to %s: %s", email, exc.code or exc)
         return False
+
+    logger.info("Slack DM sent to %s", email)
+    return True
+
+
+# --- message formatters -------------------------------------------------------
 
 
 def format_token_issued_message(title: str, token: str, page_url: str) -> str:
@@ -104,15 +102,8 @@ def format_token_issued_message(title: str, token: str, page_url: str) -> str:
     )
 
 
-ADMIN_CONTACT = "seokmogu@worxphere.ai"
-
-
 def classify_user_error(error: str, integration_name: str | None = None) -> str:
-    """Translate a raw exception message into a user-facing Korean explanation.
-
-    Returns an actionable sentence the requester can act on. Falls back to the
-    original message when no pattern matches so nothing is lost.
-    """
+    """Translate a raw exception message into a user-facing Korean explanation."""
     lower = error.lower()
     integ = integration_name or "(생성된 통합)"
 
