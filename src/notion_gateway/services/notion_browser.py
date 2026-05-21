@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -45,14 +43,9 @@ async def _first_visible(
 async def _open_browser(
     storage_state_path: Path | None = None,
 ) -> AsyncIterator[tuple[BrowserContext, Page]]:
-    """Yield a (context, page) pair, dispatching to local or remote backend."""
-    cfg = get_config()
-    if cfg.browser_connection == "remote-bedrock":
-        async with _open_remote(storage_state_path) as pair:
-            yield pair
-    else:
-        async with _open_local(storage_state_path) as pair:
-            yield pair
+    """Yield a local Chromium (context, page) pair."""
+    async with _open_local(storage_state_path) as pair:
+        yield pair
 
 
 @asynccontextmanager
@@ -85,44 +78,6 @@ async def _open_local(
     finally:
         await context.close()
         await pw.stop()
-
-
-@asynccontextmanager
-async def _open_remote(
-    storage_state_path: Path | None = None,
-) -> AsyncIterator[tuple[BrowserContext, Page]]:
-    """Open a remote browser via Bedrock AgentCore CDP connection."""
-    from bedrock_agentcore.tools.browser_client import browser_session as agentcore_browser_session
-
-    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "")
-    if not region:
-        raise RuntimeError(
-            "AWS_DEFAULT_REGION or AWS_REGION must be set for remote-bedrock browser."
-        )
-    session = agentcore_browser_session(region)
-    client = session.__enter__()
-    try:
-        ws_url, headers = client.generate_ws_headers()
-
-        pw = await async_playwright().start()
-        try:
-            browser = await pw.chromium.connect_over_cdp(ws_url, headers=headers)
-            context = browser.contexts[0]
-
-            # Inject cookies from saved storage state
-            if storage_state_path and storage_state_path.exists():
-                state = json.loads(storage_state_path.read_text(encoding="utf-8"))
-                if state.get("cookies"):
-                    await context.add_cookies(state["cookies"])
-
-            page = context.pages[0] if context.pages else await context.new_page()
-            yield context, page
-
-            await context.close()
-        finally:
-            await pw.stop()
-    finally:
-        session.__exit__(None, None, None)
 
 
 async def _is_logged_in(page: Page) -> bool:
@@ -608,8 +563,11 @@ async def provision_token_for_page(
             # Guard: if an existing integration is in the wrong workspace, it can't connect
             if target_space_id and existing.space_id and existing.space_id != target_space_id:
                 logger.warning(
-                    "Existing integration '%s' is in space %s but page is in %s, creating a new one",
-                    integration_name, existing.space_id, target_space_id,
+                    "Existing integration '%s' is in space %s but page is in %s, "
+                    "creating a new one",
+                    integration_name,
+                    existing.space_id,
+                    target_space_id,
                 )
             else:
                 token = await get_bot_token(existing.bot_id)
@@ -723,7 +681,12 @@ async def connect_integration_to_page(
     except NotionInternalApiError as e:
         msg = str(e)
         # Permission errors are not retryable — don't fall back to browser
-        if any(k in msg for k in ["Non-admin", "does not have edit access", "different workspace"]) or "permission" in msg.lower() or "unauthorized" in msg.lower():
+        permission_markers = ["Non-admin", "does not have edit access", "different workspace"]
+        if (
+            any(k in msg for k in permission_markers)
+            or "permission" in msg.lower()
+            or "unauthorized" in msg.lower()
+        ):
             logger.error(
                 "Cannot connect integration: user lacks admin rights on the page. "
                 "The page owner must add the integration manually."
@@ -732,7 +695,11 @@ async def connect_integration_to_page(
                 "페이지 관리자 권한 없음: 해당 페이지는 현재 사용자가 관리자가 아니어서 "
                 "통합을 자동 연결할 수 없습니다. 페이지 소유자가 수동으로 연결해야 합니다."
             ) from e
-        logger.warning("Internal API connect failed (%s): %s, falling back to browser", e.endpoint, e)
+        logger.warning(
+            "Internal API connect failed (%s): %s, falling back to browser",
+            e.endpoint,
+            e,
+        )
         return await _connect_via_browser(page_url, integration_name)
     except ValueError as e:
         logger.error("Invalid page URL: %s", e)
@@ -754,27 +721,7 @@ async def _connect_via_browser(
 async def bootstrap_admin_session() -> None:
     """Launch a browser and log in to Notion to bootstrap a session."""
     cfg = get_config()
-
-    if cfg.browser_connection == "remote-bedrock":
-        await _bootstrap_remote(cfg)
-    else:
-        await _bootstrap_local(cfg)
-
-
-async def _bootstrap_remote(cfg: object) -> None:
-    """Bootstrap session via Bedrock AgentCore (auto-login only)."""
-    from notion_gateway.config import AppConfig
-
-    assert isinstance(cfg, AppConfig)
-    if not cfg.notion_email or not cfg.notion_password:
-        raise RuntimeError(
-            "Remote browser requires NOTION_EMAIL and NOTION_PASSWORD for automatic login."
-        )
-
-    async with _open_remote() as (_context, page):
-        await _handle_login(page)
-        await _context.storage_state(path=str(cfg.storage_state_path))
-        logger.info("Remote auto-login successful, session saved to %s", cfg.storage_state_path)
+    await _bootstrap_local(cfg)
 
 
 async def _bootstrap_local(cfg: object) -> None:

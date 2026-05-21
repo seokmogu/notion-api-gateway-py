@@ -375,7 +375,8 @@ async def run_poll_loop() -> None:
             await _run_poll_cycle(cfg)
             if consecutive_failures > 0:
                 logger.info(
-                    "Poll cycle succeeded after %d consecutive failure(s), resuming normal interval",
+                    "Poll cycle succeeded after %d consecutive failure(s), "
+                    "resuming normal interval",
                     consecutive_failures,
                 )
             consecutive_failures = 0

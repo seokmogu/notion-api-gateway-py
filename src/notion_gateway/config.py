@@ -48,7 +48,6 @@ class AppConfig(BaseSettings):
     notion_api_version: str = "2022-06-28"
 
     # Browser automation
-    browser_connection: str = "local"  # "local" | "remote-bedrock"
     notion_browser_profile_dir: str = ""
     notion_headless: bool = True
     notion_integration_name_prefix: str = "API Access"

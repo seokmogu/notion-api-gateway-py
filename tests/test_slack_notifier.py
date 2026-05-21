@@ -78,12 +78,6 @@ class TestClassifyUserError:
         msg = classify_user_error("Session expired or unauthorized")
         assert "시스템 점검" in msg
 
-    def test_aws_region_missing(self) -> None:
-        msg = classify_user_error(
-            "AWS_DEFAULT_REGION or AWS_REGION must be set for remote-bedrock browser."
-        )
-        assert "시스템 설정" in msg
-
     def test_token_input_not_found(self) -> None:
         msg = classify_user_error(
             "Could not retrieve integration token. "

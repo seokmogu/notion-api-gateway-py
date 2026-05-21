@@ -126,8 +126,6 @@ def classify_user_error(error: str, integration_name: str | None = None) -> str:
         )
     if "session expired" in lower or "unauthorized" in lower:
         return "시스템 점검 중입니다. 잠시 후 자동으로 재처리됩니다."
-    if "aws_region" in lower or "aws_default_region" in lower:
-        return "일시적 시스템 설정 오류입니다. 관리자에게 자동 전달되었습니다."
     if "token input was not found" in lower or "could not retrieve integration token" in lower:
         return (
             "Notion 페이지 구조 변경으로 인한 일시적인 오류입니다. "
