@@ -285,29 +285,32 @@ async def retry_issued_requests() -> int:
                 await notify_failure(record.id, reason)
             continue
 
-        # Verify token is still valid before attempting connection
-        if record.canonical_page_id:
-            try:
-                access = await verify_page_access(record.canonical_page_id, record.token)
-                if not access:
-                    logger.warning(
-                        "Token invalid for %s (%s) — marking as failed",
-                        record.id,
-                        record.organization,
-                    )
-                    await mark_request_failed(
-                        record.id, "Token no longer has access to page", record.retry_count
-                    )
-                    if record.retry_count + 1 >= MAX_RETRY_COUNT:
-                        await notify_failure(record.id, "Token no longer has access to page")
-                    continue
-            except Exception as e:
-                logger.warning("Could not verify token for %s: %s — will retry", record.id, e)
-
         try:
             connected = await connect_integration_to_page(page_url, record.integration_name)
             if connected:
                 await mark_request_connected(record.id)
+                if record.canonical_page_id:
+                    try:
+                        access = await verify_page_access(record.canonical_page_id, record.token)
+                    except Exception as e:
+                        logger.warning(
+                            "Could not verify token for %s after connection: %s — will retry",
+                            record.id,
+                            e,
+                        )
+                        continue
+                    if not access:
+                        logger.warning(
+                            "Token invalid for %s (%s) after connection — marking as failed",
+                            record.id,
+                            record.organization,
+                        )
+                        await mark_request_failed(
+                            record.id, "Token no longer has access to page", record.retry_count
+                        )
+                        if record.retry_count + 1 >= MAX_RETRY_COUNT:
+                            await notify_failure(record.id, "Token no longer has access to page")
+                        continue
                 await _notify_and_complete(record.id)
                 retried += 1
             else:

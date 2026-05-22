@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from notion_gateway.services.notion_records import (
+    PROP_ERROR,
+    PROP_RETRY_COUNT,
     _text_from_property,
+    mark_request_issued,
     parse_request_record,
 )
 
@@ -89,3 +92,25 @@ class TestParseRequestRecord:
         assert record.page_url is None
         assert record.requester_id is None
         assert record.retry_count == 0
+
+
+class TestMarkRequestIssued:
+    async def test_clears_stale_error_and_retry_count(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        async def fake_update_page_properties(page_id: str, properties: dict) -> dict:
+            captured["page_id"] = page_id
+            captured["properties"] = properties
+            return {}
+
+        monkeypatch.setattr(
+            "notion_gateway.services.notion_records.update_page_properties",
+            fake_update_page_properties,
+        )
+
+        await mark_request_issued("request-1", "ntn_test", "API Access Test", "page-1")
+
+        props = captured["properties"]
+        assert captured["page_id"] == "request-1"
+        assert props[PROP_ERROR] == {"rich_text": []}
+        assert props[PROP_RETRY_COUNT]["rich_text"][0]["text"]["content"] == "0"

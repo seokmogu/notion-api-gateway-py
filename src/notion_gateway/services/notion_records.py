@@ -200,6 +200,8 @@ async def mark_request_issued(
             PROP_INTEGRATION_NAME: _rich_text(integration_name),
             PROP_CANONICAL_PAGE_ID: _rich_text(canonical_page_id),
             PROP_COMPLETION_DATE: {"date": {"start": _now_iso()}},
+            PROP_ERROR: {"rich_text": []},
+            PROP_RETRY_COUNT: _rich_text("0"),
         },
     )
 
