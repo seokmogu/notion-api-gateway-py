@@ -11,6 +11,10 @@ _NOTION_PAGE_RE = re.compile(
     r"https?://(?:www\.)?notion\.so/(?:[^/]+/)?(?:[^/]+-)?([0-9a-f]{32})(?:\?|$)",
     re.IGNORECASE,
 )
+_APP_NOTION_PAGE_RE = re.compile(
+    r"https?://app\.notion\.com/p/[^/?#]+/([0-9a-f]{32})(?:[/?#]|$)",
+    re.IGNORECASE,
+)
 
 
 def normalize_page_id(page_id: str) -> str:
@@ -51,6 +55,11 @@ def extract_canonical_page_id(input_str: str) -> str:
     if m:
         return normalize_page_id(m.group(1))
 
+    # Notion app copied page URL: https://app.notion.com/p/<workspace>/<32hex>?...
+    m = _APP_NOTION_PAGE_RE.search(text)
+    if m:
+        return normalize_page_id(m.group(1))
+
     # Trailing ID pattern: ...-<32hex>
     m = _TRAILING_ID_RE.search(text)
     if m:
@@ -61,7 +70,8 @@ def extract_canonical_page_id(input_str: str) -> str:
         "Valid formats:\n"
         "  - UUID: 3197d832-2b04-802e-af59-e199b1c7d23f\n"
         "  - Hex: 3197d8322b04802eaf59e199b1c7d23f\n"
-        "  - URL: https://www.notion.so/workspace/Page-Name-3197d8322b04802eaf59e199b1c7d23f"
+        "  - URL: https://www.notion.so/workspace/Page-Name-3197d8322b04802eaf59e199b1c7d23f\n"
+        "  - App URL: https://app.notion.com/p/workspace/3197d8322b04802eaf59e199b1c7d23f"
     )
 
 

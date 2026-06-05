@@ -61,6 +61,14 @@ class TestExtractCanonicalPageId:
         result = extract_canonical_page_id(url)
         assert result == "3197d832-2b04-802e-af59-e199b1c7d23f"
 
+    def test_app_notion_copied_page_url(self) -> None:
+        url = (
+            "https://app.notion.com/p/worxphere/786e3cdcf1a04403ba9235a58f554dc0"
+            "?v=d00450638d99424bb8501a817c3f1ec7&source=copy_link"
+        )
+        result = extract_canonical_page_id(url)
+        assert result == "786e3cdc-f1a0-4403-ba92-35a58f554dc0"
+
     def test_notion_site_rejected(self) -> None:
         with pytest.raises(ValueError, match="notion.site"):
             extract_canonical_page_id("https://myworkspace.notion.site/page-abc123")
