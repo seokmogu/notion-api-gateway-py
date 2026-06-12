@@ -7,6 +7,7 @@ import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.async_api import BrowserContext, Locator, Page, async_playwright
 
@@ -15,8 +16,12 @@ from notion_gateway.types import ProvisioningResult
 
 logger = logging.getLogger(__name__)
 
-INTEGRATIONS_URL = "https://www.notion.so/profile/integrations"
-NEW_INTEGRATION_URL = "https://www.notion.so/profile/integrations/form/new-integration"
+NOTION_APP_ORIGIN = "https://app.notion.com"
+NOTION_WWW_ORIGIN = "https://www.notion.so"
+NOTION_HOSTS = {"app.notion.com", "www.notion.so"}
+INTEGRATIONS_URL = f"{NOTION_APP_ORIGIN}/profile/integrations"
+NEW_INTEGRATION_URL = f"{NOTION_APP_ORIGIN}/profile/integrations/form/new-integration"
+LOGIN_URL = f"{NOTION_APP_ORIGIN}/login"
 VIEWPORT = {"width": 1440, "height": 900}
 SELECTOR_TIMEOUT = 15_000  # 15s
 
@@ -69,9 +74,8 @@ async def _open_local(
     if storage_state_path and storage_state_path.exists():
         ctx_kwargs["storage_state"] = str(storage_state_path)
     context = await browser.new_context(**ctx_kwargs)
-    await context.grant_permissions(
-        ["clipboard-read", "clipboard-write"], origin="https://www.notion.so"
-    )
+    for origin in (NOTION_APP_ORIGIN, NOTION_WWW_ORIGIN):
+        await context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
     try:
         page = await context.new_page()
         yield context, page
@@ -80,21 +84,77 @@ async def _open_local(
         await pw.stop()
 
 
+def _is_login_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (parsed.hostname or "") in NOTION_HOSTS and parsed.path.startswith("/login")
+
+
+def _is_notion_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (parsed.hostname or "") in NOTION_HOSTS
+
+
 async def _is_logged_in(page: Page) -> bool:
     """Check whether navigating to integrations stays out of the login flow."""
     try:
         await page.goto(INTEGRATIONS_URL, wait_until="domcontentloaded", timeout=30_000)
         await page.wait_for_timeout(1000)
-        return "/login" not in page.url
+        return _is_notion_url(page.url) and not _is_login_url(page.url)
     except Exception as e:
         logger.debug("Failed to verify Notion login state: %s", e)
         return False
 
 
+async def _submit_login_code(page: Page, code: str | None, timeout: int = 10_000) -> bool:
+    """Submit Notion's email verification code when the login flow asks for one."""
+    code_input = await _first_visible(
+        page,
+        [
+            page.locator('input[autocomplete="one-time-code"]'),
+            page.locator('input[inputmode="numeric"]'),
+            page.locator('input[name="code"]'),
+            page.get_by_placeholder(re.compile(r"code|verification|인증|코드", re.I)),
+        ],
+        timeout=timeout,
+    )
+    if not code_input:
+        return False
+
+    if not code:
+        raise RuntimeError(
+            "Notion requested an email verification code. "
+            "Set NOTION_LOGIN_CODE or run 'notion-gateway auth' manually."
+        )
+
+    login_code = code.strip()
+    if not login_code:
+        raise RuntimeError("NOTION_LOGIN_CODE is empty.")
+
+    try:
+        await code_input.fill(login_code)
+    except Exception:
+        await code_input.click()
+        await page.keyboard.type(login_code)
+    await page.keyboard.press("Enter")
+
+    verify_btn = await _first_visible(
+        page,
+        [
+            page.get_by_role("button", name=re.compile(r"continue|verify|확인|인증|계속", re.I)),
+            page.get_by_text(re.compile(r"continue|verify|확인|인증|계속", re.I)),
+        ],
+        timeout=2000,
+    )
+    if verify_btn:
+        await verify_btn.click()
+    await page.wait_for_timeout(3000)
+    return True
+
+
 async def _handle_login(page: Page) -> None:
     """Handle automatic login if credentials are configured."""
     cfg = get_config()
-    if not cfg.notion_email or not cfg.notion_password:
+    if not cfg.notion_email or not (cfg.notion_password or cfg.notion_login_code):
         raise RuntimeError(
             "Not logged in and no credentials configured. "
             "Run 'notion-gateway auth' to bootstrap a session manually."
@@ -102,8 +162,12 @@ async def _handle_login(page: Page) -> None:
 
     logger.info("Attempting automatic login for %s", cfg.notion_email)
 
-    # Navigate to login
-    await page.goto("https://www.notion.so/login", wait_until="domcontentloaded", timeout=30_000)
+    # Navigate to the current app domain. www.notion.so/login redirects here.
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
+    await page.wait_for_timeout(1000)
+    if _is_notion_url(page.url) and not _is_login_url(page.url):
+        logger.info("Existing Notion browser session is already logged in")
+        return
 
     # Enter email — input fields are stable across UI changes
     email_input = await _first_visible(
@@ -121,41 +185,27 @@ async def _handle_login(page: Page) -> None:
     await page.keyboard.press("Enter")
     await page.wait_for_timeout(2000)
 
-    # Enter password — use Enter to submit instead of finding buttons
+    # Notion may use password login or email-code login depending on account policy.
     password_input = await _first_visible(
         page,
         [
             page.locator('input[type="password"]'),
             page.get_by_placeholder(re.compile(r"password", re.I)),
         ],
-        timeout=10_000,
+        timeout=5000,
     )
-    if not password_input:
+    if password_input:
+        if not cfg.notion_password:
+            raise RuntimeError("Notion requested a password but NOTION_PASSWORD is not configured.")
+        await password_input.fill(cfg.notion_password)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(2000)
+        await _submit_login_code(page, cfg.notion_login_code, timeout=5000)
+    elif not await _submit_login_code(page, cfg.notion_login_code, timeout=5000):
         raise RuntimeError(
-            "Password input not found. Your account may use SSO or email-code login. "
+            "Password or verification-code input not found. Your account may use SSO. "
             "Run 'notion-gateway auth' to log in manually."
         )
-    await password_input.fill(cfg.notion_password)
-    await page.keyboard.press("Enter")
-
-    # Handle 2FA if needed
-    if cfg.notion_login_code:
-        code_input = await _first_visible(
-            page,
-            [
-                page.get_by_placeholder(re.compile(r"code|인증|인증코드", re.I)),
-                page.locator('input[name="code"]'),
-            ],
-            timeout=10_000,
-        )
-        if code_input:
-            await code_input.fill(cfg.notion_login_code)
-            verify_btn = await _first_visible(
-                page,
-                [page.get_by_role("button", name=re.compile(r"verify|확인|인증", re.I))],
-            )
-            if verify_btn:
-                await verify_btn.click()
 
     # Wait for login to complete
     await page.wait_for_timeout(3000)
@@ -744,8 +794,13 @@ async def _bootstrap_local(cfg: object) -> None:
         page = await context.new_page()
         await page.goto(INTEGRATIONS_URL, wait_until="domcontentloaded", timeout=60_000)
 
+        if await _is_logged_in(page):
+            await context.storage_state(path=str(cfg.storage_state_path))
+            logger.info("Existing browser session saved to %s", cfg.storage_state_path)
+            return
+
         # Try automatic login
-        if cfg.notion_email and cfg.notion_password:
+        if cfg.notion_email and (cfg.notion_password or cfg.notion_login_code):
             try:
                 await _handle_login(page)
                 await context.storage_state(path=str(cfg.storage_state_path))
@@ -763,7 +818,7 @@ async def _bootstrap_local(cfg: object) -> None:
         for i in range(100):
             try:
                 url = page.url
-                if "/login" not in url and "notion.so" in url:
+                if _is_notion_url(url) and not _is_login_url(url):
                     if await _is_logged_in(page):
                         await context.storage_state(path=str(cfg.storage_state_path))
                         print(f"\nSession saved to {cfg.storage_state_path}")

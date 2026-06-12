@@ -6,9 +6,10 @@ import re
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE)
 _HEX32_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
-_TRAILING_ID_RE = re.compile(r"-([0-9a-f]{32})(?:\?|$)", re.IGNORECASE)
+_TRAILING_ID_RE = re.compile(r"[-/]([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
 _NOTION_PAGE_RE = re.compile(
-    r"https?://(?:www\.)?notion\.so/(?:[^/]+/)?(?:[^/]+-)?([0-9a-f]{32})(?:\?|$)",
+    r"https?://(?:(?:www\.)?notion\.so|app\.notion\.com)/"
+    r"(?:p/[^/]+/)?(?:[^/]+/)?(?:[^/]+-)?([0-9a-f]{32})(?:[/?#]|$)",
     re.IGNORECASE,
 )
 
@@ -61,7 +62,8 @@ def extract_canonical_page_id(input_str: str) -> str:
         "Valid formats:\n"
         "  - UUID: 3197d832-2b04-802e-af59-e199b1c7d23f\n"
         "  - Hex: 3197d8322b04802eaf59e199b1c7d23f\n"
-        "  - URL: https://www.notion.so/workspace/Page-Name-3197d8322b04802eaf59e199b1c7d23f"
+        "  - URL: https://www.notion.so/workspace/Page-Name-3197d8322b04802eaf59e199b1c7d23f\n"
+        "  - URL: https://app.notion.com/p/workspace/3197d8322b04802eaf59e199b1c7d23f"
     )
 
 
