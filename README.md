@@ -84,6 +84,14 @@ cp .env.example .env
 |------|--------|------|
 | `SLACK_BOT_TOKEN` | - | Slack Bot Token (`xoxb-...`). 필요 스코프: `chat:write`, `users:read.email`, `users:read` |
 
+### 자동 복구 / 관리자 알림
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `SELF_HEALING_ENABLED` | `true` | 폴링 전 Notion 내부 API 세션을 점검하고 자동 복구 시도 |
+| `SELF_HEALING_ADMIN_EMAIL` | `seokmogu@worxphere.ai` | 자동 복구 실패 시 Slack DM을 받을 관리자 이메일 |
+| `SELF_HEALING_ALERT_COOLDOWN_SECONDS` | `900` | 동일 장애 Slack 알림 최소 간격(초) |
+
 ### SSL / 네트워크
 
 | 변수 | 기본값 | 설명 |
@@ -219,6 +227,8 @@ NO_SSL_VERIFY=1
 ### 모니터링
 
 - `notion-gateway doctor` — Notion API 연결, DB 접근, Slack 연결 진단
+- 폴링 루프는 요청 처리 전에 Notion 내부 API 세션을 점검하고, 실패 시 세션 refresh와 persistent profile 기반 재저장을 자동 시도합니다.
+- 자동 복구가 실패하면 `SELF_HEALING_ADMIN_EMAIL`로 Slack DM을 보내고 해당 주기 요청 처리를 건너뜁니다.
 - 로그 출력은 stdout/stderr로 전달되므로 컨테이너 로그 또는 journalctl로 확인
 - `-v` 플래그로 디버그 로깅 활성화
 
@@ -231,6 +241,7 @@ NO_SSL_VERIFY=1
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | `auth` 후에도 통합 생성 실패 | 브라우저 세션 만료 | `notion-gateway auth` 재실행 |
+| 관리자에게 자동 복구 실패 DM 수신 | 저장된 브라우저 세션과 persistent profile 모두 만료 | 맥미니에서 `notion-gateway auth` 재실행 후 `doctor` 확인 |
 | Slack 알림 미발송 | Bot Token 미설정 또는 스코프 부족 | `SLACK_BOT_TOKEN` 확인, 스코프 확인 |
 | SSL 에러 | 사내 프록시 인증서 문제 | `SSL_CA_FILE` 설정 또는 `NO_SSL_VERIFY=1` |
 | "bot detected" 에러 | Notion 봇 감지 차단 | 잠시 후 재시도, 필요 시 수동 `auth` |
@@ -262,6 +273,7 @@ src/notion_gateway/
     ├── notion_browser.py    # Playwright 브라우저 자동화
     ├── notion_records.py    # DB 레코드 파싱, 상태 관리
     ├── request_processor.py # 메인 폴링 루프, 요청 처리 오케스트레이션
+    ├── self_healing.py      # 내부 API 세션 자동 복구 및 관리자 Slack 에스컬레이션
     ├── notifier.py          # 알림 라우팅
     ├── slack_notifier.py    # Slack API 연동
     └── page_id.py           # 페이지 ID 파싱/정규화

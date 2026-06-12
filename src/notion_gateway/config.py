@@ -59,6 +59,11 @@ class AppConfig(BaseSettings):
     # Slack
     slack_bot_token: str | None = None
 
+    # Self-healing / admin escalation
+    self_healing_enabled: bool = True
+    self_healing_admin_email: str = "seokmogu@worxphere.ai"
+    self_healing_alert_cooldown_seconds: int = Field(default=900, ge=60)
+
     # SSL
     no_ssl_verify: bool = False
     ssl_ca_file: str | None = None

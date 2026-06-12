@@ -774,6 +774,33 @@ async def bootstrap_admin_session() -> None:
     await _bootstrap_local(cfg)
 
 
+async def repair_saved_session_from_profile() -> bool:
+    """Refresh storage-state from the persistent profile without manual login."""
+    cfg = get_config()
+    pw = await async_playwright().start()
+    launch_args: list[str] = ["--disable-blink-features=AutomationControlled"]
+    if cfg.no_ssl_verify:
+        launch_args.append("--ignore-certificate-errors")
+    context = await pw.chromium.launch_persistent_context(
+        cfg.notion_browser_profile_dir,
+        headless=True,
+        viewport=VIEWPORT,
+        locale="en-US",
+        args=launch_args,
+    )
+    try:
+        page = await context.new_page()
+        if await _is_logged_in(page):
+            await context.storage_state(path=str(cfg.storage_state_path))
+            logger.info("Repaired saved browser session from persistent profile")
+            return True
+        logger.warning("Persistent profile is not logged in; cannot repair saved session")
+        return False
+    finally:
+        await context.close()
+        await pw.stop()
+
+
 async def _bootstrap_local(cfg: object) -> None:
     """Bootstrap session via local persistent browser (interactive login)."""
     from notion_gateway.config import AppConfig

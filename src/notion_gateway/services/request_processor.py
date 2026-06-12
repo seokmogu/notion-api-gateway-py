@@ -30,6 +30,7 @@ from notion_gateway.services.page_id import (
     build_deterministic_integration_name,
     extract_canonical_page_id,
 )
+from notion_gateway.services.self_healing import SelfHealingAgent
 from notion_gateway.types import RequestRecord
 
 logger = logging.getLogger(__name__)
@@ -328,8 +329,11 @@ async def _sleep_interruptible(seconds: float) -> None:
         remaining -= 1.0
 
 
-async def _run_poll_cycle(cfg: "AppConfig") -> None:
+async def _run_poll_cycle(cfg: "AppConfig", healer: SelfHealingAgent) -> None:
     """Execute one poll cycle: process pending, retry issued."""
+    if not await healer.ensure_internal_api_ready():
+        raise RuntimeError("Notion internal API session is unhealthy after self-healing attempts")
+
     try:
         await process_pending_requests(cfg.request_poll_limit)
     except Exception:
@@ -353,6 +357,7 @@ async def run_poll_loop() -> None:
     last_refresh = time.monotonic()
     refresh_interval = 3600  # 1 hour
     consecutive_failures = 0
+    healer = SelfHealingAgent(cfg)
 
     logger.info(
         "Starting poll loop (interval=%.1fs, limit=%d, network_retries=%d, backoff=%ds)",
@@ -368,14 +373,17 @@ async def run_poll_loop() -> None:
         if now - last_refresh >= refresh_interval:
             logger.info("Refreshing browser session...")
             try:
-                await refresh_session()
+                refreshed = await refresh_session()
+                if not refreshed:
+                    await healer.ensure_internal_api_ready()
             except Exception as e:
                 logger.error("Session refresh failed: %s", e)
+                await healer.ensure_internal_api_ready()
             last_refresh = now
 
         # Run poll cycle with network retry tracking
         try:
-            await _run_poll_cycle(cfg)
+            await _run_poll_cycle(cfg, healer)
             if consecutive_failures > 0:
                 logger.info(
                     "Poll cycle succeeded after %d consecutive failure(s), "

@@ -21,6 +21,9 @@ class TestAppConfig:
         assert cfg.request_poll_limit == 10
         assert cfg.network_max_retries == 3
         assert cfg.network_backoff_seconds == 3600
+        assert cfg.self_healing_enabled is True
+        assert cfg.self_healing_admin_email == "seokmogu@worxphere.ai"
+        assert cfg.self_healing_alert_cooldown_seconds == 900
 
     def test_poll_interval_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NOTION_TOKEN", "ntn_test")
