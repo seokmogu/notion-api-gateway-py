@@ -63,7 +63,7 @@ def extract_canonical_page_id(input_str: str) -> str:
         "  - UUID: 3197d832-2b04-802e-af59-e199b1c7d23f\n"
         "  - Hex: 3197d8322b04802eaf59e199b1c7d23f\n"
         "  - URL: https://www.notion.so/workspace/Page-Name-3197d8322b04802eaf59e199b1c7d23f\n"
-        "  - URL: https://app.notion.com/p/workspace/3197d8322b04802eaf59e199b1c7d23f"
+        "  - App URL: https://app.notion.com/p/workspace/3197d8322b04802eaf59e199b1c7d23f"
     )
 
 
