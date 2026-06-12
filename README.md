@@ -224,6 +224,26 @@ NO_SSL_VERIFY=1
 
 ## 운영
 
+### Mac mini launchd
+
+맥미니 운영 계정(`agent`)에서는 `launchd`가 `poll` 워커를 재부팅/장애 후 자동 재시작합니다.
+
+```bash
+cd ~/project/notion-api-gateway-py
+mkdir -p operations/logs ~/Library/LaunchAgents
+cp deploy/launchd/com.worxphere.notion-api-gateway.plist ~/Library/LaunchAgents/
+plutil -lint ~/Library/LaunchAgents/com.worxphere.notion-api-gateway.plist
+
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.worxphere.notion-api-gateway.plist
+launchctl enable gui/$(id -u)/com.worxphere.notion-api-gateway
+launchctl kickstart -k gui/$(id -u)/com.worxphere.notion-api-gateway
+
+launchctl print gui/$(id -u)/com.worxphere.notion-api-gateway
+tail -f operations/logs/poll.err.log
+```
+
+서비스는 `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=30`으로 설정되어 있습니다.
+
 ### 모니터링
 
 - `notion-gateway doctor` — Notion API 연결, DB 접근, Slack 연결 진단
