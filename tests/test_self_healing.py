@@ -12,12 +12,13 @@ from notion_gateway.services.self_healing import (
 )
 
 
-def _cfg() -> AppConfig:
+def _cfg(min_consecutive_failures: int = 1) -> AppConfig:
     return AppConfig(  # type: ignore[call-arg]
         notion_token="ntn_test",
         notion_requests_database_id="db-123",
         slack_bot_token="xoxb-test",
         self_healing_alert_cooldown_seconds=60,
+        self_healing_alert_min_consecutive_failures=min_consecutive_failures,
     )
 
 
@@ -95,3 +96,83 @@ async def test_alerts_when_repair_fails(monkeypatch: pytest.MonkeyPatch) -> None
     assert alerts
     assert alerts[0][0] == "seokmogu@worxphere.ai"
     assert "자동 복구 실패" in alerts[0][1]
+
+
+async def test_defers_alert_until_consecutive_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single failed cycle must not page; only the Nth consecutive one does."""
+    alerts: list[str] = []
+
+    async def fake_health_check() -> dict[str, str]:
+        return {"session": "ok", "getSpaces": "fail: x", "listBots": "fail: x"}
+
+    async def fake_refresh_session() -> bool:
+        return False
+
+    async def fake_repair_saved_session_from_profile() -> bool:
+        return False
+
+    async def fake_send_slack_dm(_email: str, message: str) -> bool:
+        alerts.append(message)
+        return True
+
+    monkeypatch.setattr(self_healing, "health_check", fake_health_check)
+    monkeypatch.setattr(self_healing, "refresh_session", fake_refresh_session)
+    monkeypatch.setattr(
+        self_healing, "repair_saved_session_from_profile", fake_repair_saved_session_from_profile
+    )
+    monkeypatch.setattr(self_healing, "send_slack_dm", fake_send_slack_dm)
+
+    agent = SelfHealingAgent(_cfg(min_consecutive_failures=3))
+    assert await agent.ensure_internal_api_ready() is False
+    assert alerts == []  # 1st failure: deferred
+    assert await agent.ensure_internal_api_ready() is False
+    assert alerts == []  # 2nd failure: still deferred
+    assert await agent.ensure_internal_api_ready() is False
+    assert len(alerts) == 1  # 3rd consecutive failure: escalate
+
+
+async def test_transient_failure_then_recovery_resets_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure that recovers on the next cycle must not eventually page."""
+    health_results = iter(
+        [
+            # cycle 1: unhealthy, repair fails -> deferred (1/3)
+            {"session": "ok", "getSpaces": "fail: x", "listBots": "fail: x"},
+            {"session": "ok", "getSpaces": "fail: x", "listBots": "fail: x"},
+            # cycle 2: healthy again -> counter resets to 0
+            {"session": "ok", "getSpaces": "ok (1 spaces)", "listBots": "ok (2 bots)"},
+            # cycle 3: unhealthy again, repair fails -> deferred (1/3), NOT 2/3
+            {"session": "ok", "getSpaces": "fail: x", "listBots": "fail: x"},
+            {"session": "ok", "getSpaces": "fail: x", "listBots": "fail: x"},
+        ]
+    )
+    alerts: list[str] = []
+
+    async def fake_health_check() -> dict[str, str]:
+        return next(health_results)
+
+    async def fake_refresh_session() -> bool:
+        return False
+
+    async def fake_repair_saved_session_from_profile() -> bool:
+        return False
+
+    async def fake_send_slack_dm(_email: str, message: str) -> bool:
+        alerts.append(message)
+        return True
+
+    monkeypatch.setattr(self_healing, "health_check", fake_health_check)
+    monkeypatch.setattr(self_healing, "refresh_session", fake_refresh_session)
+    monkeypatch.setattr(
+        self_healing, "repair_saved_session_from_profile", fake_repair_saved_session_from_profile
+    )
+    monkeypatch.setattr(self_healing, "send_slack_dm", fake_send_slack_dm)
+
+    agent = SelfHealingAgent(_cfg(min_consecutive_failures=3))
+    assert await agent.ensure_internal_api_ready() is False  # fail 1/3
+    assert await agent.ensure_internal_api_ready() is True  # recovered, reset
+    assert await agent.ensure_internal_api_ready() is False  # fail 1/3 again
+    assert alerts == []  # never reached threshold -> no false alarm

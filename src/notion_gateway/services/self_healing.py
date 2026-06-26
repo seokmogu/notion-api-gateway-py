@@ -49,6 +49,7 @@ class SelfHealingAgent:
     def __init__(self, cfg: AppConfig | None = None) -> None:
         self.cfg = cfg or get_config()
         self._last_alert_at = 0.0
+        self._consecutive_failures = 0
 
     async def ensure_internal_api_ready(self) -> bool:
         """Return True when internal API session is usable or was repaired."""
@@ -60,6 +61,7 @@ class SelfHealingAgent:
         except Exception as exc:
             results = {"health_check": f"fail: {exc}"}
         if _is_healthy(results):
+            self._consecutive_failures = 0
             return True
 
         logger.warning("Internal API health check failed: %s", results)
@@ -74,6 +76,7 @@ class SelfHealingAgent:
                     results = await health_check()
                     if _is_healthy(results):
                         logger.info("Self-healing repaired Notion internal API session")
+                        self._consecutive_failures = 0
                         return True
             except Exception as exc:
                 error = f"{repair_name}: {exc}"
@@ -84,6 +87,20 @@ class SelfHealingAgent:
         except Exception as exc:
             results = {"health_check": f"fail: {exc}"}
             error = str(exc)
+
+        # Defer escalation: a single failed cycle is usually a transient glitch that
+        # the next poll recovers (which resets the counter). Only page a human once
+        # we have seen enough *consecutive* failures to call it a real outage.
+        self._consecutive_failures += 1
+        threshold = self.cfg.self_healing_alert_min_consecutive_failures
+        if self._consecutive_failures < threshold:
+            logger.warning(
+                "Self-healing repair failed (%d/%d consecutive); deferring alert pending retry",
+                self._consecutive_failures,
+                threshold,
+            )
+            return False
+
         await self._alert(results, error)
         return False
 

@@ -63,6 +63,9 @@ class AppConfig(BaseSettings):
     self_healing_enabled: bool = True
     self_healing_admin_email: str = "seokmogu@worxphere.ai"
     self_healing_alert_cooldown_seconds: int = Field(default=900, ge=60)
+    # Only escalate to a human after this many *consecutive* failed repair cycles.
+    # A single transient glitch (recovered on the next poll) must not page anyone.
+    self_healing_alert_min_consecutive_failures: int = Field(default=3, ge=1)
 
     # SSL
     no_ssl_verify: bool = False
