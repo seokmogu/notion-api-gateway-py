@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from slack_native_toolkit import AsyncSlackClient, SlackError
@@ -68,6 +70,27 @@ async def lookup_slack_user_by_email(email: str) -> str | None:
         return None
 
 
+def _record_slack_audit(email: str, message: str, ok: bool, reason: str | None = None) -> None:
+    """Append one line to the outbound-Slack audit trail. Never raises."""
+    try:
+        path = get_config().slack_audit_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        summary = message.splitlines()[0].strip() if message.strip() else ""
+        entry: dict[str, object] = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "recipient": email,
+            "summary": summary[:160],
+            "chars": len(message),
+            "ok": ok,
+        }
+        if reason:
+            entry["reason"] = reason
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:  # audit logging must never break notification flow
+        logger.warning("Failed to write Slack audit log: %s", exc)
+
+
 async def send_slack_dm(email: str, message: str) -> bool:
     """Send a Slack DM to the user identified by `email`. Returns True on success."""
     if not is_slack_configured():
@@ -76,6 +99,7 @@ async def send_slack_dm(email: str, message: str) -> bool:
 
     user_id = await lookup_slack_user_by_email(email)
     if not user_id:
+        _record_slack_audit(email, message, ok=False, reason="user_not_found")
         return False
 
     try:
@@ -83,9 +107,11 @@ async def send_slack_dm(email: str, message: str) -> bool:
             await cli.post_message(user_id, text=message, unfurl_links=False)
     except SlackError as exc:
         logger.error("Failed to send Slack DM to %s: %s", email, exc.code or exc)
+        _record_slack_audit(email, message, ok=False, reason=f"slack_error:{exc.code or exc}")
         return False
 
     logger.info("Slack DM sent to %s", email)
+    _record_slack_audit(email, message, ok=True)
     return True
 
 
@@ -128,8 +154,7 @@ def classify_user_error(error: str, integration_name: str | None = None) -> str:
         return "시스템 점검 중입니다. 잠시 후 자동으로 재처리됩니다."
     if "token input was not found" in lower or "could not retrieve integration token" in lower:
         return (
-            "Notion 페이지 구조 변경으로 인한 일시적인 오류입니다. "
-            "관리자에게 자동 전달되었습니다."
+            "Notion 페이지 구조 변경으로 인한 일시적인 오류입니다. 관리자에게 자동 전달되었습니다."
         )
     return error
 

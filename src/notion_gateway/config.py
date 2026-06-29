@@ -97,6 +97,11 @@ class AppConfig(BaseSettings):
     def storage_state_path(self) -> Path:
         return Path(self.notion_browser_profile_dir).parent / "storage-state.json"
 
+    @property
+    def slack_audit_log_path(self) -> Path:
+        """Append-only JSONL audit trail of every outbound Slack DM."""
+        return _PROJECT_ROOT / "operations" / "logs" / "slack_sent.jsonl"
+
 
 _config: AppConfig | None = None
 

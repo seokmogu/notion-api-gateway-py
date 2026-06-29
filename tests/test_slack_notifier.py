@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
+from notion_gateway.services import slack_notifier
 from notion_gateway.services.slack_notifier import (
     ADMIN_CONTACT,
     DOMAIN_ALIASES,
+    _record_slack_audit,
     classify_user_error,
     format_token_failed_message,
     format_token_issued_message,
@@ -68,9 +75,7 @@ class TestClassifyUserError:
         assert "편집 권한" in msg
 
     def test_different_workspace(self) -> None:
-        msg = classify_user_error(
-            "Cannot add bot permission for a bot from a different workspace"
-        )
+        msg = classify_user_error("Cannot add bot permission for a bot from a different workspace")
         assert "워크스페이스" in msg
         assert ADMIN_CONTACT in msg
 
@@ -88,3 +93,57 @@ class TestClassifyUserError:
     def test_unknown_falls_back(self) -> None:
         msg = classify_user_error("Some totally new error")
         assert msg == "Some totally new error"
+
+
+class TestSlackAudit:
+    @staticmethod
+    def _patch_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+        class _Cfg:
+            slack_audit_log_path = path
+
+        monkeypatch.setattr(slack_notifier, "get_config", lambda: _Cfg())
+
+    def test_records_success_with_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = tmp_path / "logs" / "slack_sent.jsonl"
+        self._patch_path(monkeypatch, audit)
+
+        _record_slack_audit(
+            "seokmogu@worxphere.ai",
+            ":white_check_mark: *Notion API 토큰 발급 완료*\n\n*조직명:* X",
+            ok=True,
+        )
+
+        entry = json.loads(audit.read_text(encoding="utf-8").strip())
+        assert entry["recipient"] == "seokmogu@worxphere.ai"
+        assert entry["ok"] is True
+        assert entry["summary"] == ":white_check_mark: *Notion API 토큰 발급 완료*"
+        assert entry["chars"] > 0
+        assert "reason" not in entry
+        assert entry["ts"].endswith("+00:00")  # UTC ISO
+
+    def test_records_failure_with_reason_and_appends(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = tmp_path / "logs" / "slack_sent.jsonl"
+        self._patch_path(monkeypatch, audit)
+
+        _record_slack_audit("a@b.com", ":x: 실패", ok=False, reason="user_not_found")
+        _record_slack_audit(
+            "c@d.com", ":x: 실패2", ok=False, reason="slack_error:channel_not_found"
+        )
+
+        lines = audit.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2  # append-only
+        first = json.loads(lines[0])
+        assert first["ok"] is False
+        assert first["reason"] == "user_not_found"
+        assert json.loads(lines[1])["reason"] == "slack_error:channel_not_found"
+
+    def test_never_raises_on_bad_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pointing the audit path at a file-under-a-file makes mkdir/open fail;
+        # the helper must swallow it so notifications are never blocked.
+        bad = Path(__file__) / "nope" / "slack_sent.jsonl"
+        self._patch_path(monkeypatch, bad)
+        _record_slack_audit("a@b.com", "msg", ok=True)  # must not raise
