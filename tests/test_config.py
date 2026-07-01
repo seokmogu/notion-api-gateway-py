@@ -24,6 +24,9 @@ class TestAppConfig:
         assert cfg.self_healing_enabled is True
         assert cfg.self_healing_admin_email == "seokmogu@worxphere.ai"
         assert cfg.self_healing_alert_cooldown_seconds == 900
+        assert cfg.watchdog_admin_email == "seokmogu@worxphere.ai"
+        assert cfg.watchdog_alert_cooldown_seconds == 900
+        assert cfg.watchdog_poll_stale_seconds == 300
 
     def test_poll_interval_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NOTION_TOKEN", "ntn_test")

@@ -1,5 +1,37 @@
 # 클라우드 배포
 
+## Mac mini LaunchDaemon
+
+맥미니 장기 운영은 사용자 로그인 세션에 의존하는 `LaunchAgent`가 아니라 system `LaunchDaemon`으로 구성합니다. plist는 root-owned로 `/Library/LaunchDaemons`에 설치하고, 실제 worker 프로세스는 `UserName=agent`로 실행합니다.
+
+```bash
+cd /Users/agent/project/notion-api-gateway-py
+sudo deploy/bin/install-macmini-launchdaemons.sh
+```
+
+설치되는 job:
+
+| Label | 역할 | 복구 방식 |
+| --- | --- | --- |
+| `com.worxphere.notion-api-gateway` | `notion-gateway poll` 장기 실행 | `KeepAlive=true`, crash/reboot 후 재기동 |
+| `com.worxphere.notion-api-gateway-watchdog` | `notion-gateway watchdog` 5분 주기 실행 | poller 미실행/로그 정체 시 Slack DM |
+
+검증:
+
+```bash
+sudo launchctl print system/com.worxphere.notion-api-gateway
+sudo launchctl print system/com.worxphere.notion-api-gateway-watchdog
+pgrep -af "notion-gateway poll"
+tail -f operations/logs/poll.err.log
+uv run notion-gateway watchdog
+```
+
+운영 전제:
+
+- `/Users/agent/project/notion-api-gateway-py/.env`에 Notion/Slack secrets가 있어야 합니다.
+- `data/storage-state.json`은 `notion-gateway auth`로 미리 갱신되어 있어야 합니다.
+- watchdog Slack 알림은 `WATCHDOG_ADMIN_EMAIL`과 `SLACK_BOT_TOKEN`을 사용합니다.
+
 ## Docker
 
 프로젝트에 Dockerfile이 포함되어 있지 않습니다. 아래 Dockerfile을 참고하세요.

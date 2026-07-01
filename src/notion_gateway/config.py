@@ -67,6 +67,14 @@ class AppConfig(BaseSettings):
     # A single transient glitch (recovered on the next poll) must not page anyone.
     self_healing_alert_min_consecutive_failures: int = Field(default=3, ge=1)
 
+    # External watchdog. This runs outside the poller, so it can alert when the
+    # poller process itself is gone after a reboot or crash.
+    watchdog_admin_email: str = "seokmogu@worxphere.ai"
+    watchdog_alert_cooldown_seconds: int = Field(default=900, ge=60)
+    watchdog_poll_stale_seconds: int = Field(default=300, ge=60)
+    watchdog_poll_log_path: str = "operations/logs/poll.err.log"
+    watchdog_state_path: str = "operations/logs/watchdog-state.json"
+
     # SSL
     no_ssl_verify: bool = False
     ssl_ca_file: str | None = None
@@ -101,6 +109,16 @@ class AppConfig(BaseSettings):
     def slack_audit_log_path(self) -> Path:
         """Append-only JSONL audit trail of every outbound Slack DM."""
         return _PROJECT_ROOT / "operations" / "logs" / "slack_sent.jsonl"
+
+    @property
+    def watchdog_poll_log_file(self) -> Path:
+        path = Path(self.watchdog_poll_log_path)
+        return path if path.is_absolute() else _PROJECT_ROOT / path
+
+    @property
+    def watchdog_state_file(self) -> Path:
+        path = Path(self.watchdog_state_path)
+        return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
 _config: AppConfig | None = None

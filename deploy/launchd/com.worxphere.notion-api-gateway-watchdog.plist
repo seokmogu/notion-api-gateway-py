@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.worxphere.notion-api-gateway</string>
+  <string>com.worxphere.notion-api-gateway-watchdog</string>
   <key>UserName</key>
   <string>agent</string>
   <key>ProgramArguments</key>
@@ -11,7 +11,7 @@
     <string>/opt/homebrew/bin/uv</string>
     <string>run</string>
     <string>notion-gateway</string>
-    <string>poll</string>
+    <string>watchdog</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/agent/project/notion-api-gateway-py</string>
@@ -28,13 +28,13 @@
   <string>Background</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
-  <string>/Users/agent/project/notion-api-gateway-py/operations/logs/poll.out.log</string>
+  <string>/Users/agent/project/notion-api-gateway-py/operations/logs/watchdog.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/agent/project/notion-api-gateway-py/operations/logs/poll.err.log</string>
+  <string>/Users/agent/project/notion-api-gateway-py/operations/logs/watchdog.err.log</string>
 </dict>
 </plist>

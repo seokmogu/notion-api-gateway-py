@@ -92,6 +92,18 @@ cp .env.example .env
 | `SELF_HEALING_ADMIN_EMAIL` | `seokmogu@worxphere.ai` | 자동 복구 실패 시 Slack DM을 받을 관리자 이메일 |
 | `SELF_HEALING_ALERT_COOLDOWN_SECONDS` | `900` | 동일 장애 Slack 알림 최소 간격(초) |
 
+### 외부 Watchdog
+
+폴링 프로세스가 아예 죽거나 재부팅 후 로드되지 않으면 프로세스 내부 self-healing도 실행되지 않습니다. `watchdog`은 별도 launchd job에서 실행되어 poller 프로세스와 로그 fresh 상태를 감시하고 Slack으로 관리자에게 알립니다.
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `WATCHDOG_ADMIN_EMAIL` | `seokmogu@worxphere.ai` | poller 장애 알림을 받을 관리자 이메일 |
+| `WATCHDOG_ALERT_COOLDOWN_SECONDS` | `900` | 동일 watchdog 장애 Slack 알림 최소 간격(초) |
+| `WATCHDOG_POLL_STALE_SECONDS` | `300` | poll 로그가 이 시간 이상 갱신되지 않으면 장애로 판단 |
+| `WATCHDOG_POLL_LOG_PATH` | `operations/logs/poll.err.log` | poller stderr 로그 경로 |
+| `WATCHDOG_STATE_PATH` | `operations/logs/watchdog-state.json` | watchdog 알림 cooldown 상태 파일 |
+
 ### SSL / 네트워크
 
 | 변수 | 기본값 | 설명 |
@@ -134,6 +146,9 @@ notion-gateway check-connections
 
 # 설정 및 연결 진단
 notion-gateway doctor
+
+# poll worker 외부 헬스체크 (poller와 별도 launchd job에서 실행)
+notion-gateway watchdog
 
 # 디버그 로깅
 notion-gateway -v poll
@@ -224,29 +239,40 @@ NO_SSL_VERIFY=1
 
 ## 운영
 
-### Mac mini launchd
+### Mac mini LaunchDaemon
 
-맥미니 운영 계정(`agent`)에서는 `launchd`가 `poll` 워커를 재부팅/장애 후 자동 재시작합니다.
+맥미니에서는 사용자 로그인 세션에 묶이는 `LaunchAgent`가 아니라 root-owned `LaunchDaemon`으로 운영합니다. 실제 프로세스는 `UserName=agent`로 실행되므로 `/Users/agent/project/notion-api-gateway-py`의 `.env`, `data/storage-state.json`, 로그 파일을 그대로 사용합니다.
+
+구성:
+
+- `com.worxphere.notion-api-gateway`: `notion-gateway poll`, `KeepAlive=true`
+- `com.worxphere.notion-api-gateway-watchdog`: `notion-gateway watchdog`, `StartInterval=300`
+
+설치:
 
 ```bash
-cd ~/project/notion-api-gateway-py
-mkdir -p operations/logs ~/Library/LaunchAgents
-cp deploy/launchd/com.worxphere.notion-api-gateway.plist ~/Library/LaunchAgents/
-plutil -lint ~/Library/LaunchAgents/com.worxphere.notion-api-gateway.plist
+cd /Users/agent/project/notion-api-gateway-py
+sudo deploy/bin/install-macmini-launchdaemons.sh
 
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.worxphere.notion-api-gateway.plist
-launchctl enable gui/$(id -u)/com.worxphere.notion-api-gateway
-launchctl kickstart -k gui/$(id -u)/com.worxphere.notion-api-gateway
-
-launchctl print gui/$(id -u)/com.worxphere.notion-api-gateway
+sudo launchctl print system/com.worxphere.notion-api-gateway
+sudo launchctl print system/com.worxphere.notion-api-gateway-watchdog
 tail -f operations/logs/poll.err.log
 ```
 
-서비스는 `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=30`으로 설정되어 있습니다.
+검증:
+
+```bash
+notion-gateway doctor
+notion-gateway watchdog
+pgrep -af "notion-gateway poll"
+```
+
+재부팅 후에는 로그인 없이도 system launchd가 poller를 올립니다. poller가 crash하면 `KeepAlive`가 재시작하고, poller가 없거나 로그가 5분 이상 멈추면 watchdog이 `WATCHDOG_ADMIN_EMAIL`로 Slack DM을 보냅니다.
 
 ### 모니터링
 
 - `notion-gateway doctor` — Notion API 연결, DB 접근, Slack 연결 진단
+- `notion-gateway watchdog` — poller 프로세스 존재와 로그 fresh 상태 진단, 장애 시 Slack DM
 - 폴링 루프는 요청 처리 전에 Notion 내부 API 세션을 점검하고, 실패 시 세션 refresh와 persistent profile 기반 재저장을 자동 시도합니다.
 - 자동 복구가 실패하면 `SELF_HEALING_ADMIN_EMAIL`로 Slack DM을 보내고 해당 주기 요청 처리를 건너뜁니다.
 - 로그 출력은 stdout/stderr로 전달되므로 컨테이너 로그 또는 journalctl로 확인

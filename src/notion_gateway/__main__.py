@@ -93,9 +93,10 @@ async def cmd_process(request_id: str | None = None) -> None:
         record = parse_request_record(page)
         await process_one_request(record)
     else:
+        from notion_gateway.config import get_config
         from notion_gateway.services.request_processor import process_pending_requests
 
-        count = await process_pending_requests(limit=1)
+        count = await process_pending_requests(limit=get_config().request_poll_limit)
         logger.info("Processed %d request(s)", count)
 
 
@@ -143,6 +144,15 @@ async def cmd_doctor() -> None:
     await run_doctor()
 
 
+async def cmd_watchdog() -> None:
+    """Run one external poll-worker health check."""
+    from notion_gateway.services.watchdog import run_watchdog
+
+    result = await run_watchdog()
+    if not result.ok:
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="notion-gateway",
@@ -159,6 +169,7 @@ def main() -> None:
     process_parser.add_argument("--request", type=str, help="Specific request ID to process")
 
     subparsers.add_parser("doctor", help="Run diagnostic checks")
+    subparsers.add_parser("watchdog", help="Run one poll-worker watchdog check")
     subparsers.add_parser(
         "check-connections", help="Verify and update connection status for completed records"
     )
@@ -176,6 +187,7 @@ def main() -> None:
         "poll": cmd_poll,
         "process": lambda: cmd_process(getattr(args, "request", None)),
         "doctor": cmd_doctor,
+        "watchdog": cmd_watchdog,
         "check-connections": cmd_check_connections,
     }
 
