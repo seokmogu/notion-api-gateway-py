@@ -44,6 +44,9 @@ for label in "${POLL_LABEL}" "${WATCHDOG_LABEL}"; do
   launchctl bootout "system/${label}" >/dev/null 2>&1 || true
 done
 
+# Stop any temporary nohup/manual poller before launchd takes ownership.
+pkill -u "${RUN_USER}" -f "[n]otion-gateway poll" >/dev/null 2>&1 || true
+
 launchctl bootstrap system "${LAUNCHD_DIR}/${POLL_PLIST}"
 launchctl enable "system/${POLL_LABEL}"
 launchctl kickstart -k "system/${POLL_LABEL}"
