@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from notion_gateway.services.notion_records import (
+    PROP_AUTOMATION_PERMISSION_CONFIRMED,
+    PROP_COMMENT_PERMISSION_REQUESTED,
     PROP_ERROR,
     PROP_RETRY_COUNT,
+    _checkbox_from_property,
     _text_from_property,
+    get_pending_requests,
     mark_request_issued,
     parse_request_record,
 )
@@ -51,6 +55,19 @@ class TestTextFromProperty:
         assert _text_from_property(prop) == "42"
 
 
+class TestCheckboxFromProperty:
+    def test_checked(self) -> None:
+        prop = {"type": "checkbox", "checkbox": True}
+        assert _checkbox_from_property(prop) is True
+
+    def test_unchecked(self) -> None:
+        prop = {"type": "checkbox", "checkbox": False}
+        assert _checkbox_from_property(prop) is False
+
+    def test_missing(self) -> None:
+        assert _checkbox_from_property(None) is None
+
+
 class TestParseRequestRecord:
     def test_full_record(self) -> None:
         page = {
@@ -70,6 +87,8 @@ class TestParseRequestRecord:
                 "발급 토큰키": {"type": "rich_text", "rich_text": []},
                 "통합 이름": {"type": "rich_text", "rich_text": []},
                 "연결 여부": {"type": "rich_text", "rich_text": []},
+                "자동화 계정 권한 확인": {"type": "checkbox", "checkbox": True},
+                PROP_COMMENT_PERMISSION_REQUESTED: {"type": "checkbox", "checkbox": True},
                 "재시도 횟수": {"type": "rich_text", "rich_text": [{"plain_text": "2"}]},
                 "처리 오류": {"type": "rich_text", "rich_text": []},
             },
@@ -82,6 +101,8 @@ class TestParseRequestRecord:
         assert record.requester_id == "user-1"
         assert record.requester_email == "test@example.com"
         assert record.status == "Requested"
+        assert record.automation_permission_confirmed is True
+        assert record.comment_permission_requested is True
         assert record.retry_count == 2
 
     def test_minimal_record(self) -> None:
@@ -91,6 +112,8 @@ class TestParseRequestRecord:
         assert record.organization == ""
         assert record.page_url is None
         assert record.requester_id is None
+        assert record.automation_permission_confirmed is None
+        assert record.comment_permission_requested is None
         assert record.retry_count == 0
 
 
@@ -114,3 +137,73 @@ class TestMarkRequestIssued:
         assert captured["page_id"] == "request-1"
         assert props[PROP_ERROR] == {"rich_text": []}
         assert props[PROP_RETRY_COUNT]["rich_text"][0]["text"]["content"] == "0"
+
+
+class TestGetPendingRequests:
+    async def test_skips_unconfirmed_permission_checkbox(self, monkeypatch) -> None:
+        pages = [
+            {
+                "id": "unchecked",
+                "properties": {
+                    "상태": {"type": "select", "select": {"name": "Requested"}},
+                    PROP_AUTOMATION_PERMISSION_CONFIRMED: {
+                        "type": "checkbox",
+                        "checkbox": False,
+                    },
+                    "재시도 횟수": {"type": "rich_text", "rich_text": [{"plain_text": "0"}]},
+                },
+            },
+            {
+                "id": "checked",
+                "properties": {
+                    "상태": {"type": "select", "select": {"name": "Requested"}},
+                    PROP_AUTOMATION_PERMISSION_CONFIRMED: {
+                        "type": "checkbox",
+                        "checkbox": True,
+                    },
+                    "재시도 횟수": {"type": "rich_text", "rich_text": [{"plain_text": "0"}]},
+                },
+            },
+        ]
+
+        class FakeConfig:
+            notion_requests_database_id = "db-123"
+
+        async def fake_query_database(database_id: str, body: dict) -> dict:
+            assert database_id == "db-123"
+            return {"results": pages, "has_more": False}
+
+        monkeypatch.setattr("notion_gateway.services.notion_records.get_config", FakeConfig)
+        monkeypatch.setattr(
+            "notion_gateway.services.notion_records.query_database", fake_query_database
+        )
+
+        records = await get_pending_requests(limit=10)
+
+        assert [r.id for r in records] == ["checked"]
+
+    async def test_treats_missing_checkbox_as_backward_compatible(self, monkeypatch) -> None:
+        pages = [
+            {
+                "id": "legacy",
+                "properties": {
+                    "상태": {"type": "select", "select": {"name": "Requested"}},
+                    "재시도 횟수": {"type": "rich_text", "rich_text": [{"plain_text": "0"}]},
+                },
+            }
+        ]
+
+        class FakeConfig:
+            notion_requests_database_id = "db-123"
+
+        async def fake_query_database(database_id: str, body: dict) -> dict:
+            return {"results": pages, "has_more": False}
+
+        monkeypatch.setattr("notion_gateway.services.notion_records.get_config", FakeConfig)
+        monkeypatch.setattr(
+            "notion_gateway.services.notion_records.query_database", fake_query_database
+        )
+
+        records = await get_pending_requests(limit=10)
+
+        assert [r.id for r in records] == ["legacy"]

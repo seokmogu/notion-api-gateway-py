@@ -60,13 +60,13 @@ async def run_doctor() -> None:
         from notion_gateway.config import get_config
 
         cfg = get_config()
-        _ok(f"NOTION_TOKEN configured ({cfg.notion_token[:8]}...)")
-        _ok(f"NOTION_REQUESTS_DATABASE_ID configured ({cfg.notion_requests_database_id[:8]}...)")
+        _ok(f"Notion gateway token configured ({cfg.notion_token[:8]}...)")
+        _ok(f"Requests database configured ({cfg.notion_requests_database_id[:8]}...)")
 
         if cfg.slack_bot_token:
-            _ok("SLACK_BOT_TOKEN configured")
+            _ok("Slack bot token configured")
         else:
-            _warn("SLACK_BOT_TOKEN not set (Slack notifications disabled)")
+            _warn("Slack bot token not set (Slack notifications disabled)")
     except Exception as e:
         _fail(f"Configuration error: {e}")
         all_ok = False

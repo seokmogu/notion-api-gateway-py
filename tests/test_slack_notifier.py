@@ -70,6 +70,20 @@ class TestClassifyUserError:
         msg = classify_user_error("user lacks admin rights on the page")
         assert "개인 페이지이거나" in msg
 
+    def test_external_notion_site_url(self) -> None:
+        msg = classify_user_error("notion.site URLs (external shares) are not supported")
+        assert "외부 공유용 notion.site 링크" in msg
+        assert "내부 페이지 URL" in msg
+
+    def test_missing_page_url(self) -> None:
+        msg = classify_user_error("No page URL or page ID provided")
+        assert "신청 페이지 링크가 비어" in msg
+
+    def test_invalid_page_url(self) -> None:
+        msg = classify_user_error("Cannot extract page ID from: not a valid id")
+        assert "Notion 페이지 ID" in msg
+        assert "내부 페이지 URL" in msg
+
     def test_no_edit_access(self) -> None:
         msg = classify_user_error("target page does not have edit access for user")
         assert "편집 권한" in msg

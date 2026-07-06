@@ -20,6 +20,8 @@ class RequestRecord:
     token: str | None
     integration_name: str | None
     connection_status: str | None
+    automation_permission_confirmed: bool | None
+    comment_permission_requested: bool | None
     retry_count: int
     error_message: str | None
     raw: dict[str, Any] = field(default_factory=dict, repr=False)

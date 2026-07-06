@@ -9,11 +9,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Anchor all relative paths to the project root (where pyproject.toml lives)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+_ENV_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "notion_token": ("NOTION_TOKEN", "NOTION_GATEWAY_TOKEN"),
+    "notion_requests_database_id": (
+        "NOTION_REQUESTS_DATABASE_ID",
+        "NOTION_GATEWAY_REQUESTS_DATABASE_ID",
+    ),
+    "notion_email": ("NOTION_EMAIL", "NOTION_GATEWAY_EMAIL"),
+    "notion_password": ("NOTION_PASSWORD", "NOTION_GATEWAY_PASSWORD"),
+    "notion_login_code": ("NOTION_LOGIN_CODE", "NOTION_GATEWAY_LOGIN_CODE"),
+    "slack_bot_token": ("SLACK_BOT_TOKEN", "NOTION_GATEWAY_SLACK_BOT_TOKEN"),
+}
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -38,11 +50,20 @@ def _load_dotenv(path: Path) -> dict[str, str]:
 
 
 class AppConfig(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
     # Required
-    notion_token: str = Field(min_length=1)
-    notion_requests_database_id: str = Field(min_length=1)
+    notion_token: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("NOTION_GATEWAY_TOKEN", "NOTION_TOKEN"),
+    )
+    notion_requests_database_id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices(
+            "NOTION_GATEWAY_REQUESTS_DATABASE_ID",
+            "NOTION_REQUESTS_DATABASE_ID",
+        ),
+    )
 
     # Notion API
     notion_api_version: str = "2022-06-28"
@@ -52,12 +73,24 @@ class AppConfig(BaseSettings):
     notion_headless: bool = True
     notion_integration_name_prefix: str = "API Access"
     notion_workspace_name: str | None = None
-    notion_email: str | None = None
-    notion_password: str | None = None
-    notion_login_code: str | None = None
+    notion_email: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NOTION_GATEWAY_EMAIL", "NOTION_EMAIL"),
+    )
+    notion_password: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NOTION_GATEWAY_PASSWORD", "NOTION_PASSWORD"),
+    )
+    notion_login_code: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NOTION_GATEWAY_LOGIN_CODE", "NOTION_LOGIN_CODE"),
+    )
 
     # Slack
-    slack_bot_token: str | None = None
+    slack_bot_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NOTION_GATEWAY_SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN"),
+    )
 
     # Self-healing / admin escalation
     self_healing_enabled: bool = True
@@ -124,6 +157,16 @@ class AppConfig(BaseSettings):
 _config: AppConfig | None = None
 
 
+def _apply_env_layer(target: dict[str, Any], values: dict[str, str]) -> None:
+    """Apply a .env layer, with service-specific aliases overriding legacy names."""
+    for key, value in values.items():
+        target[key.lower()] = value
+    for field_name, aliases in _ENV_FIELD_ALIASES.items():
+        for alias in aliases:
+            if alias in values:
+                target[field_name] = values[alias]
+
+
 def get_config(env_file: str = ".env") -> AppConfig:
     global _config
     if _config is None:
@@ -131,10 +174,8 @@ def get_config(env_file: str = ".env") -> AppConfig:
         env_path = _PROJECT_ROOT / env_file
         shared_path = _PROJECT_ROOT / ".env.shared"
         init_kwargs: dict[str, Any] = {}
-        for key, value in _load_dotenv(shared_path).items():
-            init_kwargs[key.lower()] = value
-        for key, value in _load_dotenv(env_path).items():
-            init_kwargs[key.lower()] = value
+        _apply_env_layer(init_kwargs, _load_dotenv(shared_path))
+        _apply_env_layer(init_kwargs, _load_dotenv(env_path))
         _config = AppConfig(**init_kwargs)  # type: ignore[arg-type]
     return _config
 

@@ -6,6 +6,7 @@ import pytest
 
 from notion_gateway import __main__ as cli
 from notion_gateway.config import AppConfig
+from notion_gateway.services.notion_internal_api import BotInfo
 
 
 @pytest.mark.asyncio
@@ -35,3 +36,35 @@ async def test_process_uses_configured_poll_limit(monkeypatch: pytest.MonkeyPatc
     await cli.cmd_process()
 
     assert calls == [10]
+
+
+@pytest.mark.asyncio
+async def test_comment_capabilities_dry_run_does_not_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updated: list[str] = []
+
+    async def fake_list_bots() -> list[BotInfo]:
+        return [
+            BotInfo(
+                bot_id="bot-1",
+                name="API Access Test",
+                space_id="space-1",
+                integration_id="integration-1",
+                alive=True,
+                capabilities={"read_content": True},
+            )
+        ]
+
+    async def fake_ensure_bot_required_capabilities(bot: BotInfo) -> None:
+        updated.append(bot.bot_id)
+
+    monkeypatch.setattr("notion_gateway.services.notion_internal_api.list_bots", fake_list_bots)
+    monkeypatch.setattr(
+        "notion_gateway.services.notion_internal_api.ensure_bot_required_capabilities",
+        fake_ensure_bot_required_capabilities,
+    )
+
+    await cli.cmd_comment_capabilities("API Access", execute=False)
+
+    assert updated == []

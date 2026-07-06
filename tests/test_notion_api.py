@@ -6,7 +6,12 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from notion_gateway.config import reset_config
-from notion_gateway.services.notion_api import notion_fetch, verify_token
+from notion_gateway.services.notion_api import (
+    create_comment,
+    list_comments,
+    notion_fetch,
+    verify_token,
+)
 from notion_gateway.types import NotionApiError
 
 
@@ -72,3 +77,32 @@ class TestVerifyToken:
             json={"message": "Unauthorized"},
         )
         assert await verify_token("ntn_invalid") is False
+
+
+class TestComments:
+    @pytest.mark.asyncio
+    async def test_list_comments(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/comments?block_id=page-1&page_size=25",
+            json={"object": "list", "results": []},
+        )
+
+        data = await list_comments("page-1", page_size=25)
+
+        assert data == {"object": "list", "results": []}
+
+    @pytest.mark.asyncio
+    async def test_create_comment_accepts_token_override(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/comments",
+            match_headers={"Authorization": "Bearer ntn_comment"},
+            json={"id": "comment-1"},
+        )
+
+        data = await create_comment(
+            "page-1",
+            [{"type": "text", "text": {"content": "hello"}}],
+            token="ntn_comment",
+        )
+
+        assert data == {"id": "comment-1"}

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
 
@@ -24,6 +26,18 @@ from notion_gateway.config import get_config
 logger = logging.getLogger(__name__)
 
 INTERNAL_API_BASE = "https://www.notion.so/api/v3"
+BASE_BOT_CAPABILITIES: dict[str, bool] = {
+    "read_content": True,
+    "insert_content": True,
+    "update_content": True,
+    "read_user_with_email": True,
+    "read_user_without_email": True,
+}
+COMMENT_BOT_CAPABILITIES: dict[str, bool] = {
+    "read_comment": True,
+    "insert_comment": True,
+}
+REQUIRED_BOT_CAPABILITIES: dict[str, bool] = BASE_BOT_CAPABILITIES
 
 
 class NotionInternalApiError(Exception):
@@ -49,6 +63,45 @@ class BotInfo:
     space_id: str
     integration_id: str
     alive: bool
+    capabilities: dict[str, Any]
+
+
+@dataclass
+class BotCapabilityStatus:
+    bot_id: str
+    name: str
+    missing: list[str]
+    changed: bool
+
+
+def required_bot_capabilities(include_comments: bool = False) -> dict[str, bool]:
+    """Return the capabilities required for one generated integration."""
+    capabilities = dict(BASE_BOT_CAPABILITIES)
+    if include_comments:
+        capabilities.update(COMMENT_BOT_CAPABILITIES)
+    return capabilities
+
+
+def merge_required_bot_capabilities(
+    capabilities: Mapping[str, Any] | None,
+    *,
+    include_comments: bool = False,
+) -> dict[str, Any]:
+    """Return capabilities with all gateway-required permissions enabled."""
+    merged = dict(capabilities or {})
+    merged.update(required_bot_capabilities(include_comments=include_comments))
+    return merged
+
+
+def missing_required_bot_capabilities(
+    capabilities: Mapping[str, Any] | None,
+    *,
+    include_comments: bool = False,
+) -> list[str]:
+    """List gateway-required capabilities that are not explicitly enabled."""
+    current = capabilities or {}
+    required = required_bot_capabilities(include_comments=include_comments)
+    return [key for key in required if current.get(key) is not True]
 
 
 def _load_session_headers() -> dict[str, str]:
@@ -129,7 +182,12 @@ async def _internal_post(endpoint: str, body: dict[str, Any]) -> tuple[Any, int]
         return data, response.status_code
 
 
-async def create_integration(name: str, space_id: str) -> CreatedBot:
+async def create_integration(
+    name: str,
+    space_id: str,
+    *,
+    include_comments: bool = False,
+) -> CreatedBot:
     """Create a new internal integration (bot).
 
     Equivalent to: browser form submit on /profile/integrations/form/new-integration
@@ -138,7 +196,12 @@ async def create_integration(name: str, space_id: str) -> CreatedBot:
     endpoint = "createDeveloperIntegrationV2"
     data, status = await _internal_post(
         endpoint,
-        {"type": "create-bot", "name": name, "spaceId": space_id},
+        {
+            "type": "create-bot",
+            "name": name,
+            "spaceId": space_id,
+            "capabilities": required_bot_capabilities(include_comments=include_comments),
+        },
     )
     _validate_response(endpoint, data, ["pointer"], status)
     pointer = data["pointer"]
@@ -181,7 +244,13 @@ async def delete_bot(bot_id: str) -> None:
     logger.info("Deleted bot %s", bot_id)
 
 
-async def connect_bot_to_page(bot_id: str, page_id: str, space_id: str) -> None:
+async def connect_bot_to_page(
+    bot_id: str,
+    page_id: str,
+    space_id: str,
+    *,
+    include_comments: bool = False,
+) -> None:
     """Grant a bot access to a specific page.
 
     Equivalent to: Actions > Connections > Add connection in the Notion UI.
@@ -192,11 +261,16 @@ async def connect_bot_to_page(bot_id: str, page_id: str, space_id: str) -> None:
         page_id: The canonical Notion page ID (UUID format)
         space_id: The workspace ID where the page lives
     """
-    import time
-    import uuid
-
     endpoint = "saveTransactionsFanout"
     now_ms = int(time.time() * 1000)
+    role = {
+        "read_content": True,
+        "insert_content": True,
+        "update_content": True,
+    }
+    if include_comments:
+        role.update(COMMENT_BOT_CAPABILITIES)
+
     body = {
         "requestId": str(uuid.uuid4()),
         "transactions": [
@@ -218,13 +292,7 @@ async def connect_bot_to_page(bot_id: str, page_id: str, space_id: str) -> None:
                             "bot_id": bot_id,
                             "parent_id": space_id,
                             "parent_table": "space",
-                            "role": {
-                                "read_comment": True,
-                                "read_content": True,
-                                "insert_comment": True,
-                                "insert_content": True,
-                                "update_content": True,
-                            },
+                            "role": role,
                         },
                     },
                     {
@@ -302,9 +370,82 @@ async def list_bots() -> list[BotInfo]:
                 space_id=record.get("space_id", ""),
                 integration_id=record.get("integration_id", ""),
                 alive=record.get("alive", False),
+                capabilities=dict(record.get("capabilities") or {}),
             )
         )
     return result
+
+
+async def update_bot_capabilities(
+    bot_id: str,
+    space_id: str,
+    capabilities: Mapping[str, Any],
+) -> None:
+    """Update a developer bot's capability map via Notion internal transactions."""
+    endpoint = "saveTransactionsMain"
+    now_ms = int(time.time() * 1000)
+    body = {
+        "requestId": str(uuid.uuid4()),
+        "transactions": [
+            {
+                "id": str(uuid.uuid4()),
+                "spaceId": space_id,
+                "debug": {"userAction": "NotionGateway.updateBotCapabilities"},
+                "operations": [
+                    {
+                        "pointer": {
+                            "id": bot_id,
+                            "table": "bot",
+                            "spaceId": space_id,
+                        },
+                        "path": ["capabilities"],
+                        "command": "set",
+                        "args": dict(capabilities),
+                    },
+                    {
+                        "pointer": {
+                            "id": bot_id,
+                            "table": "bot",
+                            "spaceId": space_id,
+                        },
+                        "path": [],
+                        "command": "update",
+                        "args": {
+                            "last_edited_at": now_ms,
+                        },
+                    },
+                ],
+            }
+        ],
+        "unretryable_error_behavior": "continue",
+    }
+    data, status = await _internal_post(endpoint, body)
+    if status >= 400:
+        _validate_response(endpoint, data, [], status)
+
+
+async def ensure_bot_required_capabilities(
+    bot: BotInfo,
+    *,
+    include_comments: bool = False,
+) -> BotCapabilityStatus:
+    """Enable gateway-required capabilities on one bot when any are missing."""
+    missing = missing_required_bot_capabilities(
+        bot.capabilities,
+        include_comments=include_comments,
+    )
+    if not missing:
+        return BotCapabilityStatus(bot.bot_id, bot.name, [], changed=False)
+
+    await update_bot_capabilities(
+        bot.bot_id,
+        bot.space_id,
+        merge_required_bot_capabilities(
+            bot.capabilities,
+            include_comments=include_comments,
+        ),
+    )
+    return BotCapabilityStatus(bot.bot_id, bot.name, missing, changed=True)
 
 
 async def find_bot_by_name(name: str) -> BotInfo | None:

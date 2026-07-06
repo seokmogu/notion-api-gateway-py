@@ -24,13 +24,19 @@ sudo launchctl print system/com.worxphere.notion-api-gateway-watchdog
 pgrep -af "notion-gateway poll"
 tail -f operations/logs/poll.err.log
 uv run notion-gateway watchdog
+uv run notion-gateway comment-capabilities
 ```
 
 운영 전제:
 
-- `/Users/agent/project/notion-api-gateway-py/.env`에 Notion/Slack secrets가 있어야 합니다.
+- `/Users/agent/project/notion-api-gateway-py/.env`에 gateway 전용 Notion/Slack secrets가 있어야 합니다.
+  `NOTION_GATEWAY_*` 변수를 우선 사용하고, 기존 `NOTION_*`/`SLACK_BOT_TOKEN`은 fallback으로만 둡니다.
 - `data/storage-state.json`은 `notion-gateway auth`로 미리 갱신되어 있어야 합니다.
-- watchdog Slack 알림은 `WATCHDOG_ADMIN_EMAIL`과 `SLACK_BOT_TOKEN`을 사용합니다.
+- 새로 발급되는 API Access 통합은 신청 폼의 `댓글 권한 추가 요청`이 체크된 경우에만
+  댓글 읽기/삽입 capability를 포함합니다. 기존 통합에 댓글 권한을 소급 추가해야 할 때는
+  `uv run notion-gateway comment-capabilities`로 dry-run 진단 후, 승인된 작업 창에서
+  `uv run notion-gateway comment-capabilities --execute`로 보정합니다.
+- watchdog Slack 알림은 `WATCHDOG_ADMIN_EMAIL`과 `NOTION_GATEWAY_SLACK_BOT_TOKEN`을 사용합니다.
 
 ## Docker
 

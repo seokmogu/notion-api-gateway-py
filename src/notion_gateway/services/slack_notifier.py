@@ -140,6 +140,18 @@ def classify_user_error(error: str, integration_name: str | None = None) -> str:
             "‘...’ → ‘연결’ 메뉴에서 통합 "
             f"`{integ}` 을(를) 직접 추가해 주세요."
         )
+    if "notion.site urls" in lower or "external shares" in lower:
+        return (
+            "외부 공유용 notion.site 링크는 처리할 수 없습니다. "
+            "Notion 앱 안에서 복사한 내부 페이지 URL을 다시 제출해 주세요."
+        )
+    if "no page url" in lower or "no page id" in lower:
+        return "신청 페이지 링크가 비어 있습니다. 연결할 내부 Notion 페이지 URL을 입력해 주세요."
+    if "cannot extract page id" in lower or "invalid page id format" in lower:
+        return (
+            "신청 페이지 링크에서 Notion 페이지 ID를 찾을 수 없습니다. "
+            "https://www.notion.so/... 형식의 내부 페이지 URL을 다시 제출해 주세요."
+        )
     if "does not have edit access" in lower:
         return (
             "요청자에게 해당 페이지의 편집 권한이 없습니다. "

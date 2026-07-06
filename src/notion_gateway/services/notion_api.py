@@ -123,10 +123,32 @@ async def update_page_properties(
     return data
 
 
-async def create_comment(page_id: str, rich_text: list[dict[str, Any]]) -> dict[str, Any]:
+async def list_comments(
+    block_id: str,
+    token: str | None = None,
+    *,
+    start_cursor: str | None = None,
+    page_size: int | None = None,
+) -> dict[str, Any]:
+    """List unresolved comments for a page or block."""
+    query = {"block_id": block_id}
+    if start_cursor:
+        query["start_cursor"] = start_cursor
+    if page_size is not None:
+        query["page_size"] = str(page_size)
+    data, _ = await notion_fetch("comments", token=token, query=query)
+    return data
+
+
+async def create_comment(
+    page_id: str,
+    rich_text: list[dict[str, Any]],
+    token: str | None = None,
+) -> dict[str, Any]:
     """Create a comment on a Notion page."""
     data, _ = await notion_fetch(
         "comments",
+        token=token,
         method="POST",
         body={"parent": {"page_id": page_id}, "rich_text": rich_text},
     )

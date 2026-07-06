@@ -4,7 +4,20 @@ from __future__ import annotations
 
 import pytest
 
-from notion_gateway.config import AppConfig
+from notion_gateway.config import AppConfig, _apply_env_layer
+
+
+@pytest.fixture(autouse=True)
+def _clear_gateway_specific_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "NOTION_GATEWAY_TOKEN",
+        "NOTION_GATEWAY_REQUESTS_DATABASE_ID",
+        "NOTION_GATEWAY_EMAIL",
+        "NOTION_GATEWAY_PASSWORD",
+        "NOTION_GATEWAY_LOGIN_CODE",
+        "NOTION_GATEWAY_SLACK_BOT_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 class TestAppConfig:
@@ -37,9 +50,46 @@ class TestAppConfig:
 
     def test_missing_required_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("NOTION_TOKEN", raising=False)
+        monkeypatch.delenv("NOTION_GATEWAY_TOKEN", raising=False)
         monkeypatch.delenv("NOTION_REQUESTS_DATABASE_ID", raising=False)
+        monkeypatch.delenv("NOTION_GATEWAY_REQUESTS_DATABASE_ID", raising=False)
         with pytest.raises(Exception):
             AppConfig()  # type: ignore[call-arg]
+
+    def test_gateway_specific_env_aliases_take_precedence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NOTION_TOKEN", "ntn_wdc_or_legacy")
+        monkeypatch.setenv("NOTION_GATEWAY_TOKEN", "ntn_gateway")
+        monkeypatch.setenv("NOTION_REQUESTS_DATABASE_ID", "legacy-db")
+        monkeypatch.setenv("NOTION_GATEWAY_REQUESTS_DATABASE_ID", "gateway-db")
+        monkeypatch.setenv("NOTION_EMAIL", "seokmogu@worxphere.ai")
+        monkeypatch.setenv("NOTION_GATEWAY_EMAIL", "notion-automation@worxphere.ai")
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-legacy")
+        monkeypatch.setenv("NOTION_GATEWAY_SLACK_BOT_TOKEN", "xoxb-gateway")
+
+        cfg = AppConfig()  # type: ignore[call-arg]
+
+        assert cfg.notion_token == "ntn_gateway"
+        assert cfg.notion_requests_database_id == "gateway-db"
+        assert cfg.notion_email == "notion-automation@worxphere.ai"
+        assert cfg.slack_bot_token == "xoxb-gateway"
+
+    def test_dotenv_gateway_aliases_override_legacy_names(self) -> None:
+        target: dict[str, str] = {}
+
+        _apply_env_layer(
+            target,
+            {
+                "NOTION_TOKEN": "ntn_wdc_or_legacy",
+                "NOTION_GATEWAY_TOKEN": "ntn_gateway",
+                "NOTION_REQUESTS_DATABASE_ID": "legacy-db",
+                "NOTION_GATEWAY_REQUESTS_DATABASE_ID": "gateway-db",
+            },
+        )
+
+        assert target["notion_token"] == "ntn_gateway"
+        assert target["notion_requests_database_id"] == "gateway-db"
 
     def test_optional_slack(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NOTION_TOKEN", "ntn_test")

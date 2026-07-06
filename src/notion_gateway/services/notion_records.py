@@ -34,6 +34,8 @@ PROP_REQUEST_DATE = "신청일자"
 PROP_COMPLETION_DATE = "처리 완료일시"
 PROP_CONNECTION_STATUS = "연결 여부"
 PROP_RETRY_COUNT = "재시도 횟수"
+PROP_AUTOMATION_PERMISSION_CONFIRMED = "자동화 계정 권한 확인"
+PROP_COMMENT_PERMISSION_REQUESTED = "댓글 권한 추가 요청"
 
 
 def _text_from_property(prop: dict[str, Any] | None) -> str | None:
@@ -63,6 +65,13 @@ def _text_from_property(prop: dict[str, Any] | None) -> str | None:
         return str(val) if val is not None else None
 
     return None
+
+
+def _checkbox_from_property(prop: dict[str, Any] | None) -> bool | None:
+    """Extract a checkbox value, preserving missing properties as None."""
+    if not prop or prop.get("type") != "checkbox":
+        return None
+    return bool(prop.get("checkbox"))
 
 
 def _people_from_property(prop: dict[str, Any] | None) -> tuple[str | None, str | None]:
@@ -95,18 +104,36 @@ def parse_request_record(page: dict[str, Any]) -> RequestRecord:
         token=_text_from_property(props.get(PROP_TOKEN)),
         integration_name=_text_from_property(props.get(PROP_INTEGRATION_NAME)),
         connection_status=_text_from_property(props.get(PROP_CONNECTION_STATUS)),
+        automation_permission_confirmed=_checkbox_from_property(
+            props.get(PROP_AUTOMATION_PERMISSION_CONFIRMED)
+        ),
+        comment_permission_requested=_checkbox_from_property(
+            props.get(PROP_COMMENT_PERMISSION_REQUESTED)
+        ),
         retry_count=int(retry_str) if retry_str and retry_str.isdigit() else 0,
         error_message=_text_from_property(props.get(PROP_ERROR)),
         raw=page,
     )
 
 
+def _has_permission_confirmation(record: RequestRecord) -> bool:
+    # Backward compatible: if the property is not in the DB yet, do not block
+    # existing deployments. Once present, unchecked requests are ignored until
+    # the requester confirms page access setup.
+    return record.automation_permission_confirmed is not False
+
+
 async def get_pending_requests(limit: int = 10) -> list[RequestRecord]:
     """Get requests with status 'Requested' or 'Failed' (excluding max retries)."""
     cfg = get_config()
-    result = await query_database(
-        cfg.notion_requests_database_id,
-        {
+    eligible: list[RequestRecord] = []
+    start_cursor: str | None = None
+
+    # Fetch a wider page so unchecked form submissions do not starve later
+    # confirmed requests when sorted by request date.
+    page_size = min(100, max(limit * 5, limit))
+    while len(eligible) < limit:
+        body: dict[str, Any] = {
             "filter": {
                 "or": [
                     {"property": PROP_STATUS, "select": {"equals": STATUS_REQUESTED}},
@@ -114,11 +141,23 @@ async def get_pending_requests(limit: int = 10) -> list[RequestRecord]:
                 ]
             },
             "sorts": [{"property": PROP_REQUEST_DATE, "direction": "ascending"}],
-            "page_size": limit,
-        },
-    )
-    records = [parse_request_record(page) for page in result.get("results", [])]
-    return [r for r in records if r.retry_count < MAX_RETRY_COUNT]
+            "page_size": page_size,
+        }
+        if start_cursor:
+            body["start_cursor"] = start_cursor
+
+        result = await query_database(cfg.notion_requests_database_id, body)
+        records = [parse_request_record(page) for page in result.get("results", [])]
+        eligible.extend(
+            r
+            for r in records
+            if r.retry_count < MAX_RETRY_COUNT and _has_permission_confirmation(r)
+        )
+        if not result.get("has_more"):
+            break
+        start_cursor = result.get("next_cursor")
+
+    return eligible[:limit]
 
 
 async def get_issued_requests(limit: int = 10) -> list[RequestRecord]:

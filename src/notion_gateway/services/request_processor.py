@@ -77,25 +77,25 @@ async def process_one_request(record: RequestRecord) -> None:
 
     # 1. Validate page URL — reject unsupported formats before any processing
     if record.page_url and ".notion.site" in record.page_url:
-        await mark_request_failed(
-            record.id,
+        await _fail_request(
+            record,
             "notion.site URLs (external shares) are not supported. "
             "Please use an internal Notion page URL: "
             "https://www.notion.so/workspace/Page-Name-<id>",
-            record.retry_count,
+            notify_now=True,
         )
         return
 
     # 2. Extract canonical page ID
     source = record.canonical_page_id or record.page_url
     if not source:
-        await mark_request_failed(record.id, "No page URL or page ID provided", record.retry_count)
+        await _fail_request(record, "No page URL or page ID provided", notify_now=True)
         return
 
     try:
         canonical_page_id = extract_canonical_page_id(source)
     except ValueError as e:
-        await mark_request_failed(record.id, str(e), record.retry_count)
+        await _fail_request(record, str(e), notify_now=True)
         return
 
     page_url = record.page_url or f"https://www.notion.so/{canonical_page_id.replace('-', '')}"
@@ -137,6 +137,7 @@ async def process_one_request(record: RequestRecord) -> None:
         canonical_page_id,
         record.organization,
     )
+    include_comment_capabilities = record.comment_permission_requested is True
 
     # Look up the page's actual workspace so the bot gets created in the same space
     # (bots cannot grant permissions on pages in other workspaces)
@@ -147,7 +148,11 @@ async def process_one_request(record: RequestRecord) -> None:
     except Exception as e:
         logger.warning("Could not resolve page space_id: %s", e)
 
-    result = await provision_token_for_page(integration_name, target_space_id=target_space_id)
+    result = await provision_token_for_page(
+        integration_name,
+        target_space_id=target_space_id,
+        include_comment_capabilities=include_comment_capabilities,
+    )
 
     # 4. Persist token immediately (prevents orphaned tokens on subsequent network error)
     await mark_request_issued(
@@ -166,6 +171,7 @@ async def process_one_request(record: RequestRecord) -> None:
             integration_name,
             bot_id=result.bot_id,
             space_id=result.space_id,
+            include_comment_capabilities=include_comment_capabilities,
         )
         if connected:
             await mark_request_connected(record.id)
@@ -180,9 +186,12 @@ async def process_one_request(record: RequestRecord) -> None:
         if "관리자 권한 없음" in msg or "Non-admin" in msg:
             permission_denied = True
             logger.error("Permission denied for %s: %s", record.id, msg)
-            await mark_request_failed(record.id, msg, record.retry_count)
-            if record.retry_count + 1 >= MAX_RETRY_COUNT:
-                await notify_failure(record.id, msg, integration_name=integration_name)
+            await _fail_request(
+                record,
+                msg,
+                integration_name=integration_name,
+                notify_now=True,
+            )
         else:
             logger.warning("Failed to connect integration to page: %s", e)
     except Exception as e:
@@ -228,6 +237,27 @@ async def _notify_and_complete(request_id: str) -> None:
         logger.warning("Notification failed (non-fatal): %s", e)
 
 
+async def _fail_request(
+    record: RequestRecord,
+    message: str,
+    *,
+    integration_name: str | None = None,
+    notify_now: bool = False,
+) -> None:
+    """Mark a request failed and notify the requester when the failure is actionable.
+
+    Immediate notifications are sent only on the first failed attempt to avoid
+    duplicate DMs while the poller retries the same failed record. Terminal
+    failures still notify on the final retry.
+    """
+    await mark_request_failed(record.id, message, record.retry_count)
+    should_notify = (notify_now and record.retry_count == 0) or (
+        record.retry_count + 1 >= MAX_RETRY_COUNT
+    )
+    if should_notify:
+        await notify_failure(record.id, message, integration_name=integration_name)
+
+
 async def process_pending_requests(limit: int = 10) -> int:
     """Fetch and process pending requests. Returns count processed."""
     records = await get_pending_requests(limit)
@@ -245,10 +275,7 @@ async def process_pending_requests(limit: int = 10) -> int:
         except Exception as e:
             logger.error("Error processing request %s: %s", record.id, e)
             try:
-                new_retry_count = record.retry_count + 1
-                await mark_request_failed(record.id, str(e), record.retry_count)
-                if new_retry_count >= MAX_RETRY_COUNT:
-                    await notify_failure(record.id, str(e))
+                await _fail_request(record, str(e))
             except Exception as inner:
                 logger.error("Failed to mark request as failed: %s", inner)
     return processed
@@ -287,7 +314,11 @@ async def retry_issued_requests() -> int:
             continue
 
         try:
-            connected = await connect_integration_to_page(page_url, record.integration_name)
+            connected = await connect_integration_to_page(
+                page_url,
+                record.integration_name,
+                include_comment_capabilities=record.comment_permission_requested is True,
+            )
             if connected:
                 await mark_request_connected(record.id)
                 if record.canonical_page_id:

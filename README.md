@@ -53,8 +53,11 @@ cp .env.example .env
 
 | 변수 | 설명 | 예시 |
 |------|------|------|
-| `NOTION_TOKEN` | Notion Internal Integration 토큰 | `ntn_xxx` |
-| `NOTION_REQUESTS_DATABASE_ID` | 신청 폼이 연결된 Notion DB ID (UUID) | `3297d832-2b04-8087-ab79-fd8dc364f884` |
+| `NOTION_GATEWAY_TOKEN` | API 발급 자동화 전용 Notion Internal Integration 토큰 | `ntn_xxx` |
+| `NOTION_GATEWAY_REQUESTS_DATABASE_ID` | 신청 폼이 연결된 Notion DB ID (UUID) | `3297d832-2b04-8087-ab79-fd8dc364f884` |
+
+`NOTION_TOKEN`, `NOTION_REQUESTS_DATABASE_ID`도 기존 배포 호환용 fallback으로 지원합니다.
+같은 호스트에서 WDC와 함께 운영할 때는 gateway 전용 변수명을 사용해 토큰을 분리합니다.
 
 ### 브라우저 자동화
 
@@ -64,9 +67,9 @@ cp .env.example .env
 | `NOTION_HEADLESS` | `true` | 헤드리스 모드 (`false`로 설정 시 브라우저 창 표시) |
 | `NOTION_INTEGRATION_NAME_PREFIX` | `API Access` | 생성되는 통합 이름 접두사 |
 | `NOTION_WORKSPACE_NAME` | - | 워크스페이스 선택 힌트 (여러 워크스페이스가 있을 때) |
-| `NOTION_EMAIL` | - | 자동 로그인용 이메일 (SSO 미지원) |
-| `NOTION_PASSWORD` | - | 자동 로그인용 비밀번호 |
-| `NOTION_LOGIN_CODE` | - | 2FA 코드 (자동 로그인 시) |
+| `NOTION_GATEWAY_EMAIL` | `notion-automation@worxphere.ai` | 자동 로그인용 이메일 (SSO 미지원) |
+| `NOTION_GATEWAY_PASSWORD` | - | 자동 로그인용 비밀번호 |
+| `NOTION_GATEWAY_LOGIN_CODE` | - | 2FA 코드 (자동 로그인 시) |
 
 ### Slack 알림
 
@@ -82,7 +85,7 @@ cp .env.example .env
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `SLACK_BOT_TOKEN` | - | Slack Bot Token (`xoxb-...`). 필요 스코프: `chat:write`, `users:read.email`, `users:read` |
+| `NOTION_GATEWAY_SLACK_BOT_TOKEN` | - | Slack Bot Token (`xoxb-...`). 필요 스코프: `chat:write`, `users:read.email`, `users:read` |
 
 ### 자동 복구 / 관리자 알림
 
@@ -150,6 +153,12 @@ notion-gateway doctor
 # poll worker 외부 헬스체크 (poller와 별도 launchd job에서 실행)
 notion-gateway watchdog
 
+# 발급된 API Access 통합의 댓글 기능 권한 진단 (기본 dry-run)
+notion-gateway comment-capabilities
+
+# 기존 API Access 통합에 댓글 읽기/삽입 capability 일괄 반영
+notion-gateway comment-capabilities --execute
+
 # 디버그 로깅
 notion-gateway -v poll
 ```
@@ -161,12 +170,14 @@ notion-gateway -v poll
 
 - [ ] Notion Internal Integration 생성 ([https://www.notion.so/my-integrations](https://www.notion.so/my-integrations))
   - 신청 DB에 대한 읽기/쓰기 권한 부여
-  - 토큰 값(`ntn_...`)을 `NOTION_TOKEN`에 설정
+  - 기본 기능: 콘텐츠 읽기/삽입/업데이트, 사용자 정보 읽기 활성화
+  - 댓글 읽기/삽입은 신청 폼의 `댓글 권한 추가 요청` 체크박스가 선택된 발급 통합에만 추가
+  - 토큰 값(`ntn_...`)을 `NOTION_GATEWAY_TOKEN`에 설정
 - [ ] 신청용 Notion DB 생성 및 폼 연결
-  - DB ID를 `NOTION_REQUESTS_DATABASE_ID`에 설정
+  - DB ID를 `NOTION_GATEWAY_REQUESTS_DATABASE_ID`에 설정
 - [ ] (선택) Slack Bot 생성 ([https://api.slack.com/apps](https://api.slack.com/apps))
   - 필요 스코프: `chat:write`, `users:read.email`, `users:read`
-  - Bot Token을 `SLACK_BOT_TOKEN`에 설정
+  - Bot Token을 `NOTION_GATEWAY_SLACK_BOT_TOKEN`에 설정
 
 ### 2. Notion DB 스키마
 
@@ -176,6 +187,8 @@ notion-gateway -v poll
 |-----------|------|------|
 | `조직명` | Title | 신청 조직명 |
 | `신청 페이지 링크` | URL | 접근 권한 부여할 페이지 URL |
+| `자동화 계정 권한 확인` | Checkbox | 신청 페이지가 `웍스피어 모든 사용자 편집허용`이 아닌 경우, 페이지 또는 상위 페이지에 `notion-automation@worxphere.ai`를 편집/Full access 권한자로 추가했는지 신청자가 확인 |
+| `댓글 권한 추가 요청` | Checkbox | 선택값. 체크하면 발급 통합에 댓글 읽기/삽입 capability와 페이지 연결 role을 추가하고, 미체크면 기본 콘텐츠 권한만 발급 |
 | `정규 페이지 ID` | Rich text | 정규화된 페이지 ID (자동 입력) |
 | `신청자` | People | 신청자 (폼에서 자동 할당) |
 | `상태` | Select | 처리 상태. 옵션: `Requested`, `Processing`, `Issued`, `완료`, `Failed` |
@@ -288,7 +301,7 @@ pgrep -af "notion-gateway poll"
 |------|------|------|
 | `auth` 후에도 통합 생성 실패 | 브라우저 세션 만료 | `notion-gateway auth` 재실행 |
 | 관리자에게 자동 복구 실패 DM 수신 | 저장된 브라우저 세션과 persistent profile 모두 만료 | 맥미니에서 `notion-gateway auth` 재실행 후 `doctor` 확인 |
-| Slack 알림 미발송 | Bot Token 미설정 또는 스코프 부족 | `SLACK_BOT_TOKEN` 확인, 스코프 확인 |
+| Slack 알림 미발송 | Bot Token 미설정 또는 스코프 부족 | `NOTION_GATEWAY_SLACK_BOT_TOKEN` 확인, 스코프 확인 |
 | SSL 에러 | 사내 프록시 인증서 문제 | `SSL_CA_FILE` 설정 또는 `NO_SSL_VERIFY=1` |
 | "bot detected" 에러 | Notion 봇 감지 차단 | 잠시 후 재시도, 필요 시 수동 `auth` |
 | 재시도 3회 초과 후 중단 | 반복 실패 | `doctor`로 진단 후 원인 해결, DB에서 재시도 횟수 초기화 |

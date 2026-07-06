@@ -137,6 +137,52 @@ async def cmd_check_connections() -> None:
     logger.info("Updated %d/%d record(s).", updated, len(records))
 
 
+async def cmd_comment_capabilities(prefix: str, execute: bool = False) -> None:
+    """Audit or update developer integrations for comment capabilities."""
+    from notion_gateway.services.notion_internal_api import (
+        ensure_bot_required_capabilities,
+        list_bots,
+        missing_required_bot_capabilities,
+    )
+
+    bots = [bot for bot in await list_bots() if bot.name.startswith(prefix)]
+    missing = [
+        (bot, missing_required_bot_capabilities(bot.capabilities, include_comments=True))
+        for bot in bots
+        if missing_required_bot_capabilities(bot.capabilities, include_comments=True)
+    ]
+
+    if not missing:
+        logger.info(
+            "All %d integration(s) with prefix %r have required capabilities.",
+            len(bots),
+            prefix,
+        )
+        return
+
+    logger.info(
+        "Found %d/%d integration(s) missing required capabilities for prefix %r.",
+        len(missing),
+        len(bots),
+        prefix,
+    )
+    for bot, missing_keys in missing:
+        logger.info("%s (%s) missing: %s", bot.name, bot.bot_id, ", ".join(missing_keys))
+
+    if not execute:
+        logger.info("Dry-run only. Re-run with --execute to update bot capabilities.")
+        return
+
+    updated = 0
+    for bot, _ in missing:
+        result = await ensure_bot_required_capabilities(bot, include_comments=True)
+        if result.changed:
+            updated += 1
+            logger.info("Updated %s (%s)", result.name, result.bot_id)
+
+    logger.info("Updated %d integration(s).", updated)
+
+
 async def cmd_doctor() -> None:
     """Run diagnostic checks."""
     from notion_gateway.doctor import run_doctor
@@ -173,6 +219,20 @@ def main() -> None:
     subparsers.add_parser(
         "check-connections", help="Verify and update connection status for completed records"
     )
+    comment_caps_parser = subparsers.add_parser(
+        "comment-capabilities",
+        help="Audit or update generated integrations for comment capabilities",
+    )
+    comment_caps_parser.add_argument(
+        "--prefix",
+        default="API Access",
+        help="Integration name prefix to scan (default: API Access)",
+    )
+    comment_caps_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually update integrations. Omit for dry-run.",
+    )
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
@@ -189,6 +249,10 @@ def main() -> None:
         "doctor": cmd_doctor,
         "watchdog": cmd_watchdog,
         "check-connections": cmd_check_connections,
+        "comment-capabilities": lambda: cmd_comment_capabilities(
+            getattr(args, "prefix", "API Access"),
+            getattr(args, "execute", False),
+        ),
     }
 
     coro = commands[args.command]()

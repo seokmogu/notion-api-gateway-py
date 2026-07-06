@@ -586,6 +586,7 @@ async def _connect_integration_to_page(page: Page, page_url: str, integration_na
 async def provision_token_for_page(
     integration_name: str,
     target_space_id: str | None = None,
+    include_comment_capabilities: bool = False,
 ) -> ProvisioningResult:
     """Provision a Notion integration token.
 
@@ -597,14 +598,51 @@ async def provision_token_for_page(
         target_space_id: Workspace to create the bot in. MUST match the target
             page's workspace, otherwise connection will fail with
             "Cannot add bot permission for a bot from a different workspace".
+        include_comment_capabilities: Whether the generated integration should
+            get read/insert comment capabilities.
     """
     from notion_gateway.services.notion_internal_api import (
+        COMMENT_BOT_CAPABILITIES,
+        REQUIRED_BOT_CAPABILITIES,
+        BotInfo,
         NotionInternalApiError,
         create_integration,
+        ensure_bot_required_capabilities,
         find_bot_by_name,
         get_available_spaces,
         get_bot_token,
+        update_bot_capabilities,
     )
+
+    async def ensure_requested_capabilities(bot: BotInfo) -> None:
+        try:
+            result = await ensure_bot_required_capabilities(
+                bot,
+                include_comments=include_comment_capabilities,
+            )
+        except NotionInternalApiError as e:
+            raise RuntimeError(
+                f"Cannot enable requested capabilities for integration "
+                f"'{bot.name}' ({bot.bot_id})"
+            ) from e
+        if result.changed:
+            logger.info(
+                "Enabled missing capabilities for integration '%s': %s",
+                bot.name,
+                ", ".join(result.missing),
+            )
+
+    async def set_created_bot_capabilities(bot_id: str, space_id: str) -> None:
+        try:
+            capabilities = dict(REQUIRED_BOT_CAPABILITIES)
+            if include_comment_capabilities:
+                capabilities.update(COMMENT_BOT_CAPABILITIES)
+            await update_bot_capabilities(bot_id, space_id, capabilities)
+        except NotionInternalApiError as e:
+            raise RuntimeError(
+                f"Cannot enable requested capabilities for new integration "
+                f"'{integration_name}' ({bot_id})"
+            ) from e
 
     try:
         # Check if integration already exists
@@ -620,6 +658,7 @@ async def provision_token_for_page(
                     target_space_id,
                 )
             else:
+                await ensure_requested_capabilities(existing)
                 token = await get_bot_token(existing.bot_id)
                 logger.info("Reusing existing integration '%s' via API", integration_name)
                 return ProvisioningResult(
@@ -645,7 +684,16 @@ async def provision_token_for_page(
                 raise NotionInternalApiError("No spaces available for integration creation")
             chosen_space = spaces[0]
 
-        bot = await create_integration(integration_name, chosen_space)
+        bot = await create_integration(
+            integration_name,
+            chosen_space,
+            include_comments=include_comment_capabilities,
+        )
+        created_info = await find_bot_by_name(integration_name)
+        if created_info:
+            await ensure_requested_capabilities(created_info)
+        else:
+            await set_created_bot_capabilities(bot.bot_id, bot.space_id or chosen_space)
         token = await get_bot_token(bot.bot_id)
         logger.info(
             "Created integration '%s' via internal API (botId=%s, space=%s)",
@@ -684,6 +732,7 @@ async def connect_integration_to_page(
     integration_name: str,
     bot_id: str | None = None,
     space_id: str | None = None,
+    include_comment_capabilities: bool = False,
 ) -> bool:
     """Connect an integration to a page.
 
@@ -695,6 +744,8 @@ async def connect_integration_to_page(
         integration_name: Integration name (used for fallback lookup)
         bot_id: Optional bot ID from provisioning (skips name lookup)
         space_id: Optional space ID from provisioning
+        include_comment_capabilities: Whether to grant page-level comment role
+            permissions when adding the connection.
     """
     from notion_gateway.services.notion_internal_api import (
         NotionInternalApiError,
@@ -725,7 +776,12 @@ async def connect_integration_to_page(
             logger.warning("Could not determine space_id, falling back to browser")
             return await _connect_via_browser(page_url, integration_name)
 
-        await connect_bot_to_page(bot_id, page_id, space_id)
+        await connect_bot_to_page(
+            bot_id,
+            page_id,
+            space_id,
+            include_comments=include_comment_capabilities,
+        )
         return True
 
     except NotionInternalApiError as e:
