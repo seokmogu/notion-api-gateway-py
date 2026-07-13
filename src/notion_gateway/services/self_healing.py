@@ -43,6 +43,20 @@ def format_self_healing_alert_message(results: dict[str, Any], error: str | None
     return "\n".join(lines)
 
 
+def format_self_healing_recovery_message(results: dict[str, Any]) -> str:
+    lines = [
+        ":white_check_mark: *Notion API Gateway 정상 복구*",
+        "",
+        "Notion 내부 API 상태가 정상으로 확인되어 토큰 발급 폴링을 재개했습니다.",
+        "",
+        "*진단 결과:*",
+    ]
+    for key in ("session", "getSpaces", "listBots"):
+        if key in results:
+            lines.append(f"- {key}: {results[key]}")
+    return "\n".join(lines)
+
+
 class SelfHealingAgent:
     """Attempts local repair before the poller mutates Notion request records."""
 
@@ -50,6 +64,7 @@ class SelfHealingAgent:
         self.cfg = cfg or get_config()
         self._last_alert_at = 0.0
         self._consecutive_failures = 0
+        self._alert_active = False
 
     async def ensure_internal_api_ready(self) -> bool:
         """Return True when internal API session is usable or was repaired."""
@@ -62,6 +77,7 @@ class SelfHealingAgent:
             results = {"health_check": f"fail: {exc}"}
         if _is_healthy(results):
             self._consecutive_failures = 0
+            await self._notify_recovery(results)
             return True
 
         logger.warning("Internal API health check failed: %s", results)
@@ -77,6 +93,7 @@ class SelfHealingAgent:
                     if _is_healthy(results):
                         logger.info("Self-healing repaired Notion internal API session")
                         self._consecutive_failures = 0
+                        await self._notify_recovery(results)
                         return True
             except Exception as exc:
                 error = f"{repair_name}: {exc}"
@@ -116,6 +133,21 @@ class SelfHealingAgent:
             format_self_healing_alert_message(results, error),
         )
         if sent:
+            self._alert_active = True
             logger.info("Self-healing alert sent to %s", self.cfg.self_healing_admin_email)
         else:
             logger.warning("Self-healing alert could not be sent")
+
+    async def _notify_recovery(self, results: dict[str, Any]) -> None:
+        if not self._alert_active:
+            return
+
+        sent = await send_slack_dm(
+            self.cfg.self_healing_admin_email,
+            format_self_healing_recovery_message(results),
+        )
+        if sent:
+            self._alert_active = False
+            logger.info("Self-healing recovery sent to %s", self.cfg.self_healing_admin_email)
+        else:
+            logger.warning("Self-healing recovery could not be sent")

@@ -142,6 +142,7 @@ async def process_one_request(record: RequestRecord) -> None:
     # Look up the page's actual workspace so the bot gets created in the same space
     # (bots cannot grant permissions on pages in other workspaces)
     from notion_gateway.services.notion_internal_api import get_page_space_id
+
     target_space_id = None
     try:
         target_space_id = await get_page_space_id(canonical_page_id)
@@ -352,12 +353,29 @@ async def retry_issued_requests() -> int:
     return retried
 
 
-async def _sleep_interruptible(seconds: float) -> None:
-    """Sleep in 1s chunks so shutdown signals are handled promptly."""
+async def _sleep_interruptible(
+    seconds: float,
+    *,
+    progress_log_interval: float | None = None,
+) -> None:
+    """Sleep in 1s chunks, optionally logging liveness during a long wait."""
     remaining = seconds
+    elapsed_since_log = 0.0
     while remaining > 0 and not _shutdown_requested:
-        await asyncio.sleep(min(1.0, remaining))
-        remaining -= 1.0
+        chunk = min(1.0, remaining)
+        await asyncio.sleep(chunk)
+        remaining -= chunk
+        elapsed_since_log += chunk
+        if (
+            progress_log_interval is not None
+            and remaining > 0
+            and elapsed_since_log >= progress_log_interval
+        ):
+            logger.info(
+                "Poll worker alive during network backoff; retrying in %ds",
+                max(1, int(remaining)),
+            )
+            elapsed_since_log = 0.0
 
 
 async def _run_poll_cycle(cfg: "AppConfig", healer: SelfHealingAgent) -> None:
@@ -434,7 +452,11 @@ async def run_poll_loop() -> None:
                     cfg.network_backoff_seconds,
                 )
                 consecutive_failures = 0
-                await _sleep_interruptible(cfg.network_backoff_seconds)
+                heartbeat_interval = min(60.0, cfg.watchdog_poll_stale_seconds / 2)
+                await _sleep_interruptible(
+                    cfg.network_backoff_seconds,
+                    progress_log_interval=heartbeat_interval,
+                )
                 continue
             else:
                 logger.warning(

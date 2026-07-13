@@ -28,6 +28,7 @@ class WatchdogResult:
     ok: bool
     issues: list[WatchdogIssue]
     alerted: bool
+    recovered: bool = False
 
 
 def is_poll_command(command: str) -> bool:
@@ -146,15 +147,37 @@ def _should_alert(cfg: AppConfig, issues: list[WatchdogIssue], now: float) -> bo
         and now - last_alert_at < cfg.watchdog_alert_cooldown_seconds
     ):
         return False
-    _write_state(
-        cfg.watchdog_state_file,
+    state.update(
         {
             "last_alert_at": now,
             "last_fingerprint": fingerprint,
             "last_issues": [issue.message for issue in issues],
-        },
+        }
     )
+    _write_state(cfg.watchdog_state_file, state)
     return True
+
+
+def _recovery_pending(cfg: AppConfig) -> bool:
+    state = _load_state(cfg.watchdog_state_file)
+    return state.get("recovery_pending") is True
+
+
+def _mark_recovery_pending(cfg: AppConfig) -> None:
+    state = _load_state(cfg.watchdog_state_file)
+    state["recovery_pending"] = True
+    _write_state(cfg.watchdog_state_file, state)
+
+
+def _mark_recovered(cfg: AppConfig, now: float) -> None:
+    state = _load_state(cfg.watchdog_state_file)
+    state.update(
+        {
+            "recovery_pending": False,
+            "last_recovered_at": now,
+        }
+    )
+    _write_state(cfg.watchdog_state_file, state)
 
 
 def format_watchdog_alert(issues: list[WatchdogIssue], cfg: AppConfig) -> str:
@@ -170,12 +193,39 @@ def format_watchdog_alert(issues: list[WatchdogIssue], cfg: AppConfig) -> str:
     )
 
 
+def format_watchdog_recovery(cfg: AppConfig) -> str:
+    """Format a recovery notice scoped to the checks the watchdog actually performs."""
+    return (
+        ":white_check_mark: *Notion API Gateway watchdog recovery*\n\n"
+        "토큰 발급 폴링 워커가 watchdog 기준 정상 상태로 복구되었습니다.\n\n"
+        f"*Host:* `{socket.gethostname()}`\n"
+        f"*Working dir:* `{Path.cwd()}`\n"
+        f"*Poll log:* `{cfg.watchdog_poll_log_file}`\n\n"
+        "poll 프로세스가 실행 중이고 로그가 다시 정상적으로 갱신되고 있습니다."
+    )
+
+
 async def run_watchdog() -> WatchdogResult:
     cfg = get_config()
     issues = collect_watchdog_issues(cfg)
     if not issues:
         logger.info("Watchdog healthy: poll worker is running and log is fresh")
-        return WatchdogResult(ok=True, issues=[], alerted=False)
+        if not _recovery_pending(cfg):
+            return WatchdogResult(ok=True, issues=[], alerted=False)
+        if not is_slack_configured():
+            logger.warning("Slack is not configured; watchdog recovery was not sent")
+            return WatchdogResult(ok=True, issues=[], alerted=False)
+
+        recovered = await send_slack_dm(
+            cfg.watchdog_admin_email,
+            format_watchdog_recovery(cfg),
+        )
+        if recovered:
+            _mark_recovered(cfg, time.time())
+            logger.info("Watchdog recovery sent to %s", cfg.watchdog_admin_email)
+        else:
+            logger.warning("Watchdog recovery could not be sent to %s", cfg.watchdog_admin_email)
+        return WatchdogResult(ok=True, issues=[], alerted=False, recovered=recovered)
 
     for issue in issues:
         logger.error("Watchdog issue: %s", issue.message)
@@ -190,6 +240,7 @@ async def run_watchdog() -> WatchdogResult:
 
     alerted = await send_slack_dm(cfg.watchdog_admin_email, format_watchdog_alert(issues, cfg))
     if alerted:
+        _mark_recovery_pending(cfg)
         logger.info("Watchdog alert sent to %s", cfg.watchdog_admin_email)
     else:
         logger.warning("Watchdog alert could not be sent to %s", cfg.watchdog_admin_email)

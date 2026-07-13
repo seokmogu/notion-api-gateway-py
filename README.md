@@ -97,7 +97,7 @@ cp .env.example .env
 
 ### 외부 Watchdog
 
-폴링 프로세스가 아예 죽거나 재부팅 후 로드되지 않으면 프로세스 내부 self-healing도 실행되지 않습니다. `watchdog`은 별도 launchd job에서 실행되어 poller 프로세스와 로그 fresh 상태를 감시하고 Slack으로 관리자에게 알립니다.
+폴링 프로세스가 아예 죽거나 재부팅 후 로드되지 않으면 프로세스 내부 self-healing도 실행되지 않습니다. `watchdog`은 별도 launchd job에서 실행되어 poller 프로세스와 로그 fresh 상태를 감시하고 Slack으로 관리자에게 알립니다. 경고 후 프로세스와 로그가 다시 정상이 되면 복구 DM을 한 번 보냅니다. 장기 네트워크 백오프 중에는 poller가 heartbeat 로그를 남겨 정상 대기를 로그 정체로 오판하지 않습니다.
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
@@ -280,14 +280,14 @@ notion-gateway watchdog
 pgrep -af "notion-gateway poll"
 ```
 
-재부팅 후에는 로그인 없이도 system launchd가 poller를 올립니다. poller가 crash하면 `KeepAlive`가 재시작하고, poller가 없거나 로그가 5분 이상 멈추면 watchdog이 `WATCHDOG_ADMIN_EMAIL`로 Slack DM을 보냅니다.
+재부팅 후에는 로그인 없이도 system launchd가 poller를 올립니다. poller가 crash하면 `KeepAlive`가 재시작하고, poller가 없거나 heartbeat를 포함한 로그가 5분 이상 멈추면 watchdog이 `WATCHDOG_ADMIN_EMAIL`로 Slack DM을 보냅니다. 장애 경고가 실제 전송된 뒤 건강 상태가 확인되면 정상 복구 DM을 한 번 보냅니다.
 
 ### 모니터링
 
 - `notion-gateway doctor` — Notion API 연결, DB 접근, Slack 연결 진단
-- `notion-gateway watchdog` — poller 프로세스 존재와 로그 fresh 상태 진단, 장애 시 Slack DM
+- `notion-gateway watchdog` — poller 프로세스 존재와 로그 fresh 상태 진단, 장애 및 정상 복구 시 Slack DM
 - 폴링 루프는 요청 처리 전에 Notion 내부 API 세션을 점검하고, 실패 시 세션 refresh와 persistent profile 기반 재저장을 자동 시도합니다.
-- 자동 복구가 실패하면 `SELF_HEALING_ADMIN_EMAIL`로 Slack DM을 보내고 해당 주기 요청 처리를 건너뜁니다.
+- 자동 복구가 실패하면 `SELF_HEALING_ADMIN_EMAIL`로 Slack DM을 보내고 해당 주기 요청 처리를 건너뜁니다. 이후 내부 API가 정상이 되면 복구 DM을 한 번 보냅니다.
 - 로그 출력은 stdout/stderr로 전달되므로 컨테이너 로그 또는 journalctl로 확인
 - `-v` 플래그로 디버그 로깅 활성화
 

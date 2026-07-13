@@ -2,10 +2,56 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from notion_gateway.services import notion_internal_api, request_processor
 from notion_gateway.types import ProvisioningResult, RequestRecord
+
+
+@pytest.mark.asyncio
+async def test_long_backoff_emits_poll_liveness_heartbeats(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds <= 1.0
+
+    request_processor._shutdown_requested = False
+    monkeypatch.setattr(request_processor.asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger=request_processor.__name__):
+        await request_processor._sleep_interruptible(5, progress_log_interval=2)
+
+    heartbeat_messages = [
+        record.message
+        for record in caplog.records
+        if "alive during network backoff" in record.message
+    ]
+    assert heartbeat_messages == [
+        "Poll worker alive during network backoff; retrying in 3s",
+        "Poll worker alive during network backoff; retrying in 1s",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_normal_poll_sleep_does_not_emit_backoff_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds <= 1.0
+
+    request_processor._shutdown_requested = False
+    monkeypatch.setattr(request_processor.asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger=request_processor.__name__):
+        await request_processor._sleep_interruptible(3)
+
+    assert not [
+        record for record in caplog.records if "alive during network backoff" in record.message
+    ]
 
 
 @pytest.mark.asyncio

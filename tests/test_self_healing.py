@@ -9,6 +9,7 @@ from notion_gateway.services import self_healing
 from notion_gateway.services.self_healing import (
     SelfHealingAgent,
     format_self_healing_alert_message,
+    format_self_healing_recovery_message,
 )
 
 
@@ -30,6 +31,14 @@ def test_format_self_healing_alert_message() -> None:
     assert "자동 복구 실패" in msg
     assert "getSpaces: fail: unauthorized" in msg
     assert "refresh failed" in msg
+
+
+def test_format_self_healing_recovery_message() -> None:
+    msg = format_self_healing_recovery_message(
+        {"session": "ok", "getSpaces": "ok (3 spaces)", "listBots": "ok (119 bots)"}
+    )
+    assert "정상 복구" in msg
+    assert "listBots: ok (119 bots)" in msg
 
 
 async def test_repairs_without_alert(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,6 +105,52 @@ async def test_alerts_when_repair_fails(monkeypatch: pytest.MonkeyPatch) -> None
     assert alerts
     assert alerts[0][0] == "seokmogu@worxphere.ai"
     assert "자동 복구 실패" in alerts[0][1]
+
+
+async def test_alert_then_healthy_sends_one_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    unhealthy = {
+        "session": "ok",
+        "getSpaces": "fail: upstream 502",
+        "listBots": "fail: upstream 502",
+    }
+    healthy = {
+        "session": "ok",
+        "getSpaces": "ok (3 spaces)",
+        "listBots": "ok (119 bots)",
+    }
+    health_results = iter([unhealthy, unhealthy, healthy, healthy])
+    messages: list[str] = []
+
+    async def fake_health_check() -> dict[str, str]:
+        return next(health_results)
+
+    async def fake_refresh_session() -> bool:
+        return False
+
+    async def fake_repair_saved_session_from_profile() -> bool:
+        return False
+
+    async def fake_send_slack_dm(_email: str, message: str) -> bool:
+        messages.append(message)
+        return True
+
+    monkeypatch.setattr(self_healing, "health_check", fake_health_check)
+    monkeypatch.setattr(self_healing, "refresh_session", fake_refresh_session)
+    monkeypatch.setattr(
+        self_healing,
+        "repair_saved_session_from_profile",
+        fake_repair_saved_session_from_profile,
+    )
+    monkeypatch.setattr(self_healing, "send_slack_dm", fake_send_slack_dm)
+
+    agent = SelfHealingAgent(_cfg())
+    assert await agent.ensure_internal_api_ready() is False
+    assert await agent.ensure_internal_api_ready() is True
+    assert await agent.ensure_internal_api_ready() is True
+
+    assert len(messages) == 2
+    assert "자동 복구 실패" in messages[0]
+    assert "정상 복구" in messages[1]
 
 
 async def test_defers_alert_until_consecutive_threshold(
