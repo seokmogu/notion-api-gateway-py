@@ -94,7 +94,7 @@ class AppConfig(BaseSettings):
 
     # Self-healing / admin escalation
     self_healing_enabled: bool = True
-    self_healing_admin_email: str = "seokmogu@worxphere.ai"
+    self_healing_admin_email: str = "admin@example.com"
     self_healing_alert_cooldown_seconds: int = Field(default=900, ge=60)
     # Only escalate to a human after this many *consecutive* failed repair cycles.
     # A single transient glitch (recovered on the next poll) must not page anyone.
@@ -102,7 +102,7 @@ class AppConfig(BaseSettings):
 
     # External watchdog. This runs outside the poller, so it can alert when the
     # poller process itself is gone after a reboot or crash.
-    watchdog_admin_email: str = "seokmogu@worxphere.ai"
+    watchdog_admin_email: str = "admin@example.com"
     watchdog_alert_cooldown_seconds: int = Field(default=900, ge=60)
     watchdog_poll_stale_seconds: int = Field(default=300, ge=60)
     watchdog_poll_log_path: str = "operations/logs/poll.err.log"

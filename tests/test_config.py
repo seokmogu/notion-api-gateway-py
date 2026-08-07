@@ -35,9 +35,9 @@ class TestAppConfig:
         assert cfg.network_max_retries == 3
         assert cfg.network_backoff_seconds == 3600
         assert cfg.self_healing_enabled is True
-        assert cfg.self_healing_admin_email == "seokmogu@worxphere.ai"
+        assert cfg.self_healing_admin_email == "admin@example.com"
         assert cfg.self_healing_alert_cooldown_seconds == 900
-        assert cfg.watchdog_admin_email == "seokmogu@worxphere.ai"
+        assert cfg.watchdog_admin_email == "admin@example.com"
         assert cfg.watchdog_alert_cooldown_seconds == 900
         assert cfg.watchdog_poll_stale_seconds == 300
 
@@ -63,7 +63,7 @@ class TestAppConfig:
         monkeypatch.setenv("NOTION_GATEWAY_TOKEN", "ntn_gateway")
         monkeypatch.setenv("NOTION_REQUESTS_DATABASE_ID", "legacy-db")
         monkeypatch.setenv("NOTION_GATEWAY_REQUESTS_DATABASE_ID", "gateway-db")
-        monkeypatch.setenv("NOTION_EMAIL", "seokmogu@worxphere.ai")
+        monkeypatch.setenv("NOTION_EMAIL", "user@example.com")
         monkeypatch.setenv("NOTION_GATEWAY_EMAIL", "notion-automation@worxphere.ai")
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-legacy")
         monkeypatch.setenv("NOTION_GATEWAY_SLACK_BOT_TOKEN", "xoxb-gateway")

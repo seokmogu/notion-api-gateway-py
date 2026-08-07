@@ -135,13 +135,13 @@ class TestSlackAudit:
         self._patch_path(monkeypatch, audit)
 
         _record_slack_audit(
-            "seokmogu@worxphere.ai",
+            "requester@example.com",
             ":white_check_mark: *Notion API 토큰 발급 완료*\n\n*조직명:* X",
             ok=True,
         )
 
         entry = json.loads(audit.read_text(encoding="utf-8").strip())
-        assert entry["recipient"] == "seokmogu@worxphere.ai"
+        assert entry["recipient"] == "requester@example.com"
         assert entry["ok"] is True
         assert entry["summary"] == ":white_check_mark: *Notion API 토큰 발급 완료*"
         assert entry["chars"] > 0

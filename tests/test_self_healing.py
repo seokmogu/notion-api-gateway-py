@@ -103,7 +103,7 @@ async def test_alerts_when_repair_fails(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert await SelfHealingAgent(_cfg()).ensure_internal_api_ready() is False
     assert alerts
-    assert alerts[0][0] == "seokmogu@worxphere.ai"
+    assert alerts[0][0] == "admin@example.com"
     assert "자동 복구 실패" in alerts[0][1]
 
 

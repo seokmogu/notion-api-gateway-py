@@ -92,7 +92,7 @@ cp .env.example .env
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `SELF_HEALING_ENABLED` | `true` | 폴링 전 Notion 내부 API 세션을 점검하고 자동 복구 시도 |
-| `SELF_HEALING_ADMIN_EMAIL` | `seokmogu@worxphere.ai` | 자동 복구 실패 시 Slack DM을 받을 관리자 이메일 |
+| `SELF_HEALING_ADMIN_EMAIL` | `admin@example.com` | 자동 복구 실패 시 Slack DM을 받을 관리자 이메일. 운영 환경에서 반드시 설정 |
 | `SELF_HEALING_ALERT_COOLDOWN_SECONDS` | `900` | 동일 장애 Slack 알림 최소 간격(초) |
 
 ### 외부 Watchdog
@@ -101,7 +101,7 @@ cp .env.example .env
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `WATCHDOG_ADMIN_EMAIL` | `seokmogu@worxphere.ai` | poller 장애 알림을 받을 관리자 이메일 |
+| `WATCHDOG_ADMIN_EMAIL` | `admin@example.com` | poller 장애 알림을 받을 관리자 이메일. 운영 환경에서 반드시 설정 |
 | `WATCHDOG_ALERT_COOLDOWN_SECONDS` | `900` | 동일 watchdog 장애 Slack 알림 최소 간격(초) |
 | `WATCHDOG_POLL_STALE_SECONDS` | `300` | poll 로그가 이 시간 이상 갱신되지 않으면 장애로 판단 |
 | `WATCHDOG_POLL_LOG_PATH` | `operations/logs/poll.err.log` | poller stderr 로그 경로 |

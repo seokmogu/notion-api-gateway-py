@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -13,7 +14,7 @@ from notion_gateway.config import get_config
 
 logger = logging.getLogger(__name__)
 
-ADMIN_CONTACT = "seokmogu@worxphere.ai"
+ADMIN_CONTACT = os.getenv("SELF_HEALING_ADMIN_EMAIL", "admin@example.com")
 
 # Domain aliases for email lookup fallback when the primary lookup fails.
 DOMAIN_ALIASES: dict[str, str] = {
@@ -118,14 +119,25 @@ async def send_slack_dm(email: str, message: str) -> bool:
 # --- message formatters -------------------------------------------------------
 
 
-def format_token_issued_message(title: str, token: str, page_url: str) -> str:
-    return (
+def format_token_issued_message(
+    title: str,
+    token: str,
+    page_url: str,
+    existing_requester_mention: str | None = None,
+) -> str:
+    message = (
         f":white_check_mark: *Notion API 토큰 발급 완료*\n\n"
         f"*조직명:* {title}\n"
         f"*토큰:* `{token}`\n"
         f"*페이지:* {page_url}\n\n"
         f"해당 페이지에 대한 API 접근 권한이 부여되었습니다."
     )
+    if existing_requester_mention:
+        message += (
+            "\n\n:information_source: 이 페이지에는 기존 API 키가 있습니다. "
+            f"키 사용·변경 관련 문의는 기존 신청자 {existing_requester_mention}에게 해주세요."
+        )
+    return message
 
 
 def classify_user_error(error: str, integration_name: str | None = None) -> str:

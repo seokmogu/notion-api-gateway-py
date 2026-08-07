@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from notion_gateway.services.notion_api import retrieve_page
 from notion_gateway.services.notion_records import (
@@ -15,12 +16,13 @@ from notion_gateway.services.slack_notifier import (
     format_token_failed_message,
     format_token_issued_message,
     is_slack_configured,
+    lookup_slack_user_by_email,
     send_slack_dm,
 )
 
 logger = logging.getLogger(__name__)
 
-ADMIN_EMAIL = "seokmogu@worxphere.ai"
+ADMIN_EMAIL = os.getenv("SELF_HEALING_ADMIN_EMAIL", "admin@example.com")
 
 
 def _text_from_prop(props: dict, name: str) -> str:
@@ -69,7 +71,10 @@ async def notify_requested(request_page_id: str) -> None:
         logger.error("Failed to send request notification for %s: %s", request_page_id, e)
 
 
-async def notify_requester(request_page_id: str) -> None:
+async def notify_requester(
+    request_page_id: str,
+    existing_requester_email: str | None = None,
+) -> None:
     """Send Slack DM after successful token issuance."""
     try:
         page = await retrieve_page(request_page_id)
@@ -81,7 +86,36 @@ async def notify_requester(request_page_id: str) -> None:
         _, requester_email = _requester_info(props)
 
         if requester_email and is_slack_configured():
-            message = format_token_issued_message(title, token, page_url)
+            existing_requester_mention = None
+            if (
+                existing_requester_email
+                and existing_requester_email.casefold() != requester_email.casefold()
+            ):
+                try:
+                    existing_requester_id = await lookup_slack_user_by_email(
+                        existing_requester_email
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not look up existing requester in Slack for reused token "
+                        "request %s: %s",
+                        request_page_id,
+                        exc,
+                    )
+                    existing_requester_id = None
+                if existing_requester_id:
+                    existing_requester_mention = f"<@{existing_requester_id}>"
+                else:
+                    logger.warning(
+                        "Could not resolve existing requester in Slack for reused token request %s",
+                        request_page_id,
+                    )
+            message = format_token_issued_message(
+                title,
+                token,
+                page_url,
+                existing_requester_mention=existing_requester_mention,
+            )
             await send_slack_dm(requester_email, message)
 
     except Exception as e:
