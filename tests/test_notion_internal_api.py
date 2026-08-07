@@ -11,6 +11,7 @@ from notion_gateway.services.notion_internal_api import (
     COMMENT_BOT_CAPABILITIES,
     REQUIRED_BOT_CAPABILITIES,
     BotInfo,
+    connect_bot_to_page,
     create_integration,
     ensure_bot_required_capabilities,
     list_bots,
@@ -212,3 +213,84 @@ async def test_ensure_bot_required_capabilities_updates_when_missing(
     assert updates[0][0:2] == ("bot-1", "space-1")
     for key in REQUIRED_BOT_CAPABILITIES:
         assert updates[0][2][key] is True
+    for key in COMMENT_BOT_CAPABILITIES:
+        assert updates[0][2][key] is True
+
+
+@pytest.mark.asyncio
+async def test_connect_bot_to_page_includes_both_comment_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_post(endpoint: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        calls.append((endpoint, body))
+        return {}, 200
+
+    monkeypatch.setattr(notion_internal_api, "_internal_post", fake_post)
+
+    await connect_bot_to_page("bot-1", "page-1", "space-1", include_comments=True)
+
+    role = calls[0][1]["transactions"][0]["operations"][0]["args"]["role"]
+    assert role["read_comment"] is True
+    assert role["insert_comment"] is True
+
+
+@pytest.mark.asyncio
+async def test_find_bot_by_id_ignores_duplicate_names_and_uuid_formatting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bots = [
+        BotInfo(
+            bot_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            name="API Access Duplicate",
+            space_id="space-wrong",
+            integration_id="integration-wrong",
+            alive=True,
+            capabilities={},
+        ),
+        BotInfo(
+            bot_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            name="API Access Duplicate",
+            space_id="space-exact",
+            integration_id="integration-exact",
+            alive=True,
+            capabilities={},
+        ),
+    ]
+
+    async def fake_list_bots() -> list[BotInfo]:
+        return bots
+
+    monkeypatch.setattr(notion_internal_api, "list_bots", fake_list_bots)
+
+    result = await notion_internal_api.find_bot_by_id("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    assert result is bots[1]
+
+
+@pytest.mark.asyncio
+async def test_ensure_bot_required_capabilities_is_noop_when_comments_already_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = BotInfo(
+        bot_id="bot-exact",
+        name="API Access Duplicate",
+        space_id="space-exact",
+        integration_id="integration-exact",
+        alive=True,
+        capabilities={
+            **REQUIRED_BOT_CAPABILITIES,
+            **COMMENT_BOT_CAPABILITIES,
+        },
+    )
+
+    async def fail_update(*args: object, **kwargs: object) -> None:
+        pytest.fail("already-enabled capabilities must not be rewritten")
+
+    monkeypatch.setattr(notion_internal_api, "update_bot_capabilities", fail_update)
+
+    result = await ensure_bot_required_capabilities(bot, include_comments=True)
+
+    assert result.changed is False
+    assert result.missing == []

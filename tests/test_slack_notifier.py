@@ -32,6 +32,17 @@ class TestFormatTokenIssuedMessage:
         assert "https://notion.so/page" in msg
         assert "완료" in msg
 
+    def test_mentions_existing_requester_when_reusing_a_page_token(self) -> None:
+        msg = format_token_issued_message(
+            "Test Page",
+            "ntn_abc123",
+            "https://notion.so/page",
+            existing_requester_mention="<@U01234567>",
+        )
+        assert "기존 API 키" in msg
+        assert "<@U01234567>" in msg
+        assert "문의" in msg
+
 
 class TestFormatTokenFailedMessage:
     def test_unknown_error_falls_back_to_raw_message(self) -> None:

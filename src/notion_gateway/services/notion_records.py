@@ -189,6 +189,10 @@ async def get_existing_token_for_page(canonical_page_id: str) -> RequestRecord |
                     {"property": PROP_STATUS, "select": {"equals": STATUS_COMPLETED}},
                 ]
             },
+            "sorts": [
+                {"property": PROP_COMPLETION_DATE, "direction": "descending"},
+                {"property": PROP_REQUEST_DATE, "direction": "descending"},
+            ],
             "page_size": 1,
         },
     )

@@ -1,0 +1,5 @@
+{
+  "last_turn_at": "2026-04-08T05:05:32.291Z",
+  "turn_count": 3,
+  "last_agent_output": "**Findings**\n- HIGH: `_notify_and_complete()` is not atomic. It does a read, then a write, then send"
+}

@@ -155,6 +155,35 @@ async def create_comment(
     return data
 
 
+async def get_token_bot_id(token: str) -> str:
+    """Return the bot ID that owns an integration token."""
+    data, request_id = await notion_fetch("users/me", token=token)
+    if (
+        not isinstance(data, dict)
+        or data.get("object") != "user"
+        or data.get("type") != "bot"
+        or not isinstance(data.get("id"), str)
+        or not data["id"]
+    ):
+        raise NotionApiError(
+            "Notion users/me response did not include a valid bot ID",
+            request_id=request_id,
+            details=data if isinstance(data, dict) else {},
+        )
+    return data["id"]
+
+
+async def verify_comment_access(page_id: str, token: str) -> bool:
+    """Check whether a token can list comments on a page."""
+    try:
+        await list_comments(page_id, token=token, page_size=1)
+        return True
+    except NotionApiError as e:
+        if e.status in (401, 403, 404):
+            return False
+        raise
+
+
 async def verify_token(token: str) -> bool:
     """Verify a Notion token by calling users/me."""
     try:

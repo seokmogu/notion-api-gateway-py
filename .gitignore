@@ -5,9 +5,12 @@ dist/
 build/
 .venv/
 .env
+.env.*
+!.env.example
 data/
 *.log
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 .omc/
+operations/

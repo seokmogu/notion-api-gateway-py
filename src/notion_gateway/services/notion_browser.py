@@ -583,6 +583,61 @@ async def _connect_integration_to_page(page: Page, page_url: str, integration_na
     return False
 
 
+async def ensure_existing_token_comment_capabilities(
+    token: str,
+    integration_name: str,
+) -> ProvisioningResult:
+    """Enable comment capabilities on the exact bot identified by a token."""
+    from notion_gateway.services.notion_api import get_token_bot_id
+    from notion_gateway.services.notion_internal_api import (
+        NotionInternalApiError,
+        ensure_bot_required_capabilities,
+        find_bot_by_id,
+        missing_required_bot_capabilities,
+    )
+
+    bot_id = await get_token_bot_id(token)
+    try:
+        bot = await find_bot_by_id(bot_id)
+        if not bot:
+            raise RuntimeError(f"Cannot find integration bot {bot_id} for existing token")
+        result = await ensure_bot_required_capabilities(bot, include_comments=True)
+        if result.changed:
+            refreshed = await find_bot_by_id(bot_id)
+            if not refreshed:
+                raise RuntimeError(
+                    f"Cannot verify updated capabilities for integration bot {bot_id}"
+                )
+            missing = missing_required_bot_capabilities(
+                refreshed.capabilities,
+                include_comments=True,
+            )
+            if missing:
+                raise RuntimeError(
+                    f"Integration bot {bot_id} is still missing capabilities: {', '.join(missing)}"
+                )
+            bot = refreshed
+    except NotionInternalApiError as e:
+        raise RuntimeError(
+            f"Cannot enable requested capabilities for integration bot {bot_id}"
+        ) from e
+
+    if result.changed:
+        logger.info(
+            "Enabled missing capabilities for existing integration '%s' (%s): %s",
+            bot.name,
+            bot.bot_id,
+            ", ".join(result.missing),
+        )
+
+    return ProvisioningResult(
+        token=token,
+        integration_name=bot.name or integration_name,
+        bot_id=bot.bot_id,
+        space_id=bot.space_id,
+    )
+
+
 async def provision_token_for_page(
     integration_name: str,
     target_space_id: str | None = None,
@@ -622,8 +677,7 @@ async def provision_token_for_page(
             )
         except NotionInternalApiError as e:
             raise RuntimeError(
-                f"Cannot enable requested capabilities for integration "
-                f"'{bot.name}' ({bot.bot_id})"
+                f"Cannot enable requested capabilities for integration '{bot.name}' ({bot.bot_id})"
             ) from e
         if result.changed:
             logger.info(
@@ -697,7 +751,9 @@ async def provision_token_for_page(
         token = await get_bot_token(bot.bot_id)
         logger.info(
             "Created integration '%s' via internal API (botId=%s, space=%s)",
-            integration_name, bot.bot_id, chosen_space,
+            integration_name,
+            bot.bot_id,
+            chosen_space,
         )
         return ProvisioningResult(
             token=token,
@@ -733,6 +789,7 @@ async def connect_integration_to_page(
     bot_id: str | None = None,
     space_id: str | None = None,
     include_comment_capabilities: bool = False,
+    allow_name_fallback: bool = True,
 ) -> bool:
     """Connect an integration to a page.
 
@@ -746,6 +803,8 @@ async def connect_integration_to_page(
         space_id: Optional space ID from provisioning
         include_comment_capabilities: Whether to grant page-level comment role
             permissions when adding the connection.
+        allow_name_fallback: Whether internal API failures may fall back to
+            name-based browser automation.
     """
     from notion_gateway.services.notion_internal_api import (
         NotionInternalApiError,
@@ -773,6 +832,9 @@ async def connect_integration_to_page(
         if not space_id:
             space_id = await get_page_space_id(page_id)
         if not space_id:
+            if not allow_name_fallback:
+                logger.warning("Could not determine space_id for exact bot %s", bot_id)
+                return False
             logger.warning("Could not determine space_id, falling back to browser")
             return await _connect_via_browser(page_url, integration_name)
 
@@ -801,6 +863,8 @@ async def connect_integration_to_page(
                 "페이지 관리자 권한 없음: 해당 페이지는 현재 사용자가 관리자가 아니어서 "
                 "통합을 자동 연결할 수 없습니다. 페이지 소유자가 수동으로 연결해야 합니다."
             ) from e
+        if not allow_name_fallback:
+            raise RuntimeError(f"Cannot connect exact integration bot {bot_id} to page") from e
         logger.warning(
             "Internal API connect failed (%s): %s, falling back to browser",
             e.endpoint,

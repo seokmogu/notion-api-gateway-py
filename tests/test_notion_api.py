@@ -6,6 +6,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from notion_gateway.config import reset_config
+from notion_gateway.services import notion_api
 from notion_gateway.services.notion_api import (
     create_comment,
     list_comments,
@@ -106,3 +107,54 @@ class TestComments:
         )
 
         assert data == {"id": "comment-1"}
+
+    @pytest.mark.asyncio
+    async def test_verify_comment_access_requires_successful_list_call(
+        self,
+        httpx_mock: HTTPXMock,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/comments?block_id=page-1&page_size=1",
+            match_headers={"Authorization": "Bearer ntn_comment"},
+            json={"object": "list", "results": []},
+        )
+
+        assert await notion_api.verify_comment_access("page-1", "ntn_comment") is True
+
+    @pytest.mark.asyncio
+    async def test_verify_comment_access_rejects_missing_capability(
+        self,
+        httpx_mock: HTTPXMock,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/comments?block_id=page-1&page_size=1",
+            status_code=403,
+            json={"message": "Missing read_comment capability"},
+        )
+
+        assert await notion_api.verify_comment_access("page-1", "ntn_comment") is False
+
+
+class TestTokenBotIdentity:
+    @pytest.mark.asyncio
+    async def test_get_token_bot_id_uses_users_me(self, httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/users/me",
+            match_headers={"Authorization": "Bearer ntn_existing"},
+            json={"object": "user", "id": "bot-exact", "type": "bot"},
+        )
+
+        assert await notion_api.get_token_bot_id("ntn_existing") == "bot-exact"
+
+    @pytest.mark.asyncio
+    async def test_get_token_bot_id_rejects_malformed_response(
+        self,
+        httpx_mock: HTTPXMock,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://api.notion.com/v1/users/me",
+            json={"object": "user", "type": "bot"},
+        )
+
+        with pytest.raises(NotionApiError, match="bot ID"):
+            await notion_api.get_token_bot_id("ntn_existing")

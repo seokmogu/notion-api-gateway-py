@@ -457,6 +457,16 @@ async def find_bot_by_name(name: str) -> BotInfo | None:
     return None
 
 
+async def find_bot_by_id(bot_id: str) -> BotInfo | None:
+    """Find a bot by ID, accepting UUIDs with or without hyphens."""
+    normalized_id = bot_id.replace("-", "").lower()
+    bots = await list_bots()
+    for bot in bots:
+        if bot.bot_id.replace("-", "").lower() == normalized_id:
+            return bot
+    return None
+
+
 async def health_check() -> dict[str, Any]:
     """Verify internal API connectivity and session validity.
 

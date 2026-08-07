@@ -9,9 +9,10 @@ import time
 
 from notion_gateway.config import AppConfig, get_config
 from notion_gateway.services.notifier import notify_failure, notify_requested, notify_requester
-from notion_gateway.services.notion_api import verify_page_access
+from notion_gateway.services.notion_api import verify_comment_access, verify_page_access
 from notion_gateway.services.notion_browser import (
     connect_integration_to_page,
+    ensure_existing_token_comment_capabilities,
     provision_token_for_page,
     refresh_session,
 )
@@ -31,11 +32,106 @@ from notion_gateway.services.page_id import (
     extract_canonical_page_id,
 )
 from notion_gateway.services.self_healing import SelfHealingAgent
-from notion_gateway.types import RequestRecord
+from notion_gateway.types import NotionApiError, ProvisioningResult, RequestRecord
 
 logger = logging.getLogger(__name__)
 
 _shutdown_requested = False
+
+
+def _is_permission_denied(message: str) -> bool:
+    return "관리자 권한 없음" in message or "Non-admin" in message
+
+
+async def _ensure_existing_token_comment_access(
+    token: str,
+    integration_name: str,
+    page_url: str,
+    canonical_page_id: str,
+) -> ProvisioningResult:
+    prepared = await ensure_existing_token_comment_capabilities(token, integration_name)
+    connected = await connect_integration_to_page(
+        page_url,
+        prepared.integration_name,
+        bot_id=prepared.bot_id,
+        space_id=prepared.space_id,
+        include_comment_capabilities=True,
+        allow_name_fallback=False,
+    )
+    if not connected:
+        raise RuntimeError(f"Could not update comment role for page {canonical_page_id}")
+    if not await verify_comment_access(canonical_page_id, token):
+        raise RuntimeError(f"Comment access verification failed for page {canonical_page_id}")
+    return prepared
+
+
+async def _reuse_comment_token_candidate(
+    record: RequestRecord,
+    candidate: RequestRecord,
+    page_url: str,
+    canonical_page_id: str,
+) -> bool:
+    """Reuse one comment-token candidate; return False only when its token is invalid."""
+    token = candidate.token
+    if not token:
+        return False
+
+    try:
+        has_page_access = await verify_page_access(canonical_page_id, token)
+    except Exception:
+        logger.warning(
+            "Network error verifying existing token for page %s; comment access was not confirmed",
+            canonical_page_id,
+        )
+        raise
+    if not has_page_access:
+        logger.info(
+            "Existing token for page %s needs its page role restored",
+            canonical_page_id,
+        )
+
+    integration_name = candidate.integration_name or "existing"
+    try:
+        prepared = await _ensure_existing_token_comment_access(
+            token,
+            integration_name,
+            page_url,
+            canonical_page_id,
+        )
+    except NotionApiError as e:
+        if e.status not in (401, 403):
+            raise
+        logger.info(
+            "Existing token for page %s is no longer valid",
+            canonical_page_id,
+        )
+        return False
+    except RuntimeError as e:
+        msg = str(e)
+        if _is_permission_denied(msg):
+            await _fail_request(
+                record,
+                msg,
+                integration_name=integration_name,
+                notify_now=True,
+            )
+            return True
+        raise
+
+    await mark_request_issued(
+        record.id,
+        token,
+        prepared.integration_name,
+        canonical_page_id,
+    )
+    await mark_request_connected(record.id)
+    await _notify_and_complete(
+        record.id,
+        existing_requester_email=(
+            candidate.requester_email if candidate.id != record.id else None
+        ),
+    )
+    return True
 
 
 def _request_shutdown(signum: int, frame: object) -> None:
@@ -99,37 +195,57 @@ async def process_one_request(record: RequestRecord) -> None:
         return
 
     page_url = record.page_url or f"https://www.notion.so/{canonical_page_id.replace('-', '')}"
+    include_comment_capabilities = record.comment_permission_requested is True
 
-    # 2. Check for existing token
+    # 2. Check for an existing token. Comment requests resume the token already
+    # persisted on this record first, then fall back to the latest completed record.
+    if include_comment_capabilities and record.token:
+        if await _reuse_comment_token_candidate(record, record, page_url, canonical_page_id):
+            return
+
     existing = await get_existing_token_for_page(canonical_page_id)
     if existing and existing.token:
-        try:
-            access = await verify_page_access(canonical_page_id, existing.token)
-        except Exception:
-            # Transient network error — conservatively reuse the existing token
-            logger.warning(
-                "Network error verifying existing token for page %s; reusing token",
-                canonical_page_id,
-            )
-            access = True
-        if access:
-            logger.info("Reusing existing token for page %s", canonical_page_id)
-            await mark_request_issued(
-                record.id,
-                existing.token,
-                existing.integration_name or "existing",
-                canonical_page_id,
-            )
-            # Skip notification if:
-            #   - same request reprocessed (status was wrongly reset to Failed), OR
-            #   - current record already has a token (was previously issued and notified)
-            # Notify only for genuinely new requests reusing an existing page token.
-            if existing.id == record.id or record.token:
-                await mark_request_completed(record.id)
-            else:
-                await _notify_and_complete(record.id)
-            return
-        logger.info("Existing token for page %s is invalid; reprovisioning", canonical_page_id)
+        if include_comment_capabilities:
+            if existing.token != record.token:
+                if await _reuse_comment_token_candidate(
+                    record,
+                    existing,
+                    page_url,
+                    canonical_page_id,
+                ):
+                    return
+        else:
+            try:
+                access = await verify_page_access(canonical_page_id, existing.token)
+            except Exception:
+                # Preserve the legacy minimum-permission behavior for non-comment requests.
+                logger.warning(
+                    "Network error verifying existing token for page %s; reusing token",
+                    canonical_page_id,
+                )
+                access = True
+            if access:
+                logger.info("Reusing existing token for page %s", canonical_page_id)
+                integration_name = existing.integration_name or "existing"
+                await mark_request_issued(
+                    record.id,
+                    existing.token,
+                    integration_name,
+                    canonical_page_id,
+                )
+                # Skip notification if:
+                #   - same request reprocessed (status was wrongly reset to Failed), OR
+                #   - current record already has a token (was previously issued and notified)
+                # Notify only for genuinely new requests reusing an existing page token.
+                if existing.id == record.id or record.token:
+                    await mark_request_completed(record.id)
+                else:
+                    await _notify_and_complete(
+                        record.id,
+                        existing_requester_email=existing.requester_email,
+                    )
+                return
+            logger.info("Existing token for page %s is invalid; reprovisioning", canonical_page_id)
 
     # 3. Provision new token via internal API
     integration_name = build_deterministic_integration_name(
@@ -137,8 +253,6 @@ async def process_one_request(record: RequestRecord) -> None:
         canonical_page_id,
         record.organization,
     )
-    include_comment_capabilities = record.comment_permission_requested is True
-
     # Look up the page's actual workspace so the bot gets created in the same space
     # (bots cannot grant permissions on pages in other workspaces)
     from notion_gateway.services.notion_internal_api import get_page_space_id
@@ -162,35 +276,73 @@ async def process_one_request(record: RequestRecord) -> None:
         result.integration_name,
         canonical_page_id,
     )
+    if include_comment_capabilities:
+        result = await ensure_existing_token_comment_capabilities(
+            result.token,
+            result.integration_name,
+        )
 
     # 5. Connect integration to page
     connected = False
     permission_denied = False
     try:
-        connected = await connect_integration_to_page(
-            page_url,
-            integration_name,
-            bot_id=result.bot_id,
-            space_id=result.space_id,
-            include_comment_capabilities=include_comment_capabilities,
-        )
+        if include_comment_capabilities:
+            connected = await connect_integration_to_page(
+                page_url,
+                result.integration_name,
+                bot_id=result.bot_id,
+                space_id=result.space_id,
+                include_comment_capabilities=True,
+                allow_name_fallback=False,
+            )
+        else:
+            connected = await connect_integration_to_page(
+                page_url,
+                integration_name,
+                bot_id=result.bot_id,
+                space_id=result.space_id,
+                include_comment_capabilities=False,
+            )
         if connected:
-            await mark_request_connected(record.id)
-            try:
-                if await verify_page_access(canonical_page_id, result.token):
-                    logger.info("Connection verified for page %s", canonical_page_id)
-            except Exception:
-                logger.warning("Network error verifying connection for page %s", canonical_page_id)
+            if include_comment_capabilities:
+                try:
+                    comment_access = await verify_comment_access(canonical_page_id, result.token)
+                except Exception as e:
+                    logger.warning(
+                        "Could not verify comment access for page %s: %s",
+                        canonical_page_id,
+                        e,
+                    )
+                    connected = False
+                else:
+                    if comment_access:
+                        await mark_request_connected(record.id)
+                        logger.info("Comment access verified for page %s", canonical_page_id)
+                    else:
+                        logger.warning(
+                            "Comment access not available for page %s; will retry",
+                            canonical_page_id,
+                        )
+                        connected = False
+            else:
+                await mark_request_connected(record.id)
+                try:
+                    if await verify_page_access(canonical_page_id, result.token):
+                        logger.info("Connection verified for page %s", canonical_page_id)
+                except Exception:
+                    logger.warning(
+                        "Network error verifying connection for page %s", canonical_page_id
+                    )
     except RuntimeError as e:
         # Permission errors are terminal — mark as failed with clear message
         msg = str(e)
-        if "관리자 권한 없음" in msg or "Non-admin" in msg:
+        if _is_permission_denied(msg):
             permission_denied = True
             logger.error("Permission denied for %s: %s", record.id, msg)
             await _fail_request(
                 record,
                 msg,
-                integration_name=integration_name,
+                integration_name=result.integration_name,
                 notify_now=True,
             )
         else:
@@ -207,7 +359,10 @@ async def process_one_request(record: RequestRecord) -> None:
         logger.info("Connection failed for %s — staying as Issued for retry", record.id)
 
 
-async def _notify_and_complete(request_id: str) -> None:
+async def _notify_and_complete(
+    request_id: str,
+    existing_requester_email: str | None = None,
+) -> None:
     """Mark as completed, then send notification. Idempotent — skips if already done."""
     from notion_gateway.services.notion_api import retrieve_page
     from notion_gateway.services.notion_records import PROP_STATUS, STATUS_COMPLETED
@@ -233,7 +388,7 @@ async def _notify_and_complete(request_id: str) -> None:
         return  # Don't notify if status update failed — retry next cycle
 
     try:
-        await notify_requester(request_id)
+        await notify_requester(request_id, existing_requester_email)
     except Exception as e:
         logger.warning("Notification failed (non-fatal): %s", e)
 
@@ -289,8 +444,9 @@ async def retry_issued_requests() -> int:
     for record in records:
         if _shutdown_requested:
             break
+        include_comment_capabilities = record.comment_permission_requested is True
         # Already connected — just ensure notify/complete ran
-        if record.connection_status == "Yes":
+        if record.connection_status == "Yes" and not include_comment_capabilities:
             await _notify_and_complete(record.id)
             retried += 1
             continue
@@ -300,12 +456,19 @@ async def retry_issued_requests() -> int:
         if not page_url and record.canonical_page_id:
             page_url = f"https://www.notion.so/{record.canonical_page_id.replace('-', '')}"
 
-        if not page_url or not record.integration_name or not record.token:
+        if (
+            not page_url
+            or not record.integration_name
+            or not record.token
+            or (include_comment_capabilities and not record.canonical_page_id)
+        ):
             reason = (
                 "Missing page URL"
                 if not page_url
                 else "Missing integration name"
                 if not record.integration_name
+                else "Missing canonical page ID"
+                if include_comment_capabilities and not record.canonical_page_id
                 else "Missing token"
             )
             logger.warning("Marking %s as failed: %s", record.id, reason)
@@ -315,41 +478,74 @@ async def retry_issued_requests() -> int:
             continue
 
         try:
-            connected = await connect_integration_to_page(
-                page_url,
-                record.integration_name,
-                include_comment_capabilities=record.comment_permission_requested is True,
-            )
+            integration_name = record.integration_name
+            if include_comment_capabilities:
+                prepared = await _ensure_existing_token_comment_access(
+                    record.token,
+                    integration_name,
+                    page_url,
+                    record.canonical_page_id,
+                )
+                integration_name = prepared.integration_name
+                connected = True
+            else:
+                connected = await connect_integration_to_page(
+                    page_url,
+                    integration_name,
+                    include_comment_capabilities=False,
+                )
             if connected:
-                await mark_request_connected(record.id)
-                if record.canonical_page_id:
-                    try:
-                        access = await verify_page_access(record.canonical_page_id, record.token)
-                    except Exception as e:
-                        logger.warning(
-                            "Could not verify token for %s after connection: %s — will retry",
-                            record.id,
-                            e,
-                        )
-                        continue
-                    if not access:
-                        logger.warning(
-                            "Token invalid for %s (%s) after connection — marking as failed",
-                            record.id,
-                            record.organization,
-                        )
-                        await mark_request_failed(
-                            record.id, "Token no longer has access to page", record.retry_count
-                        )
-                        if record.retry_count + 1 >= MAX_RETRY_COUNT:
-                            await notify_failure(record.id, "Token no longer has access to page")
-                        continue
+                if include_comment_capabilities:
+                    await mark_request_connected(record.id)
+                else:
+                    await mark_request_connected(record.id)
+                    if record.canonical_page_id:
+                        try:
+                            access = await verify_page_access(
+                                record.canonical_page_id,
+                                record.token,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Could not verify token for %s after connection: %s — will retry",
+                                record.id,
+                                e,
+                            )
+                            continue
+                        if not access:
+                            logger.warning(
+                                "Token invalid for %s (%s) after connection — marking as failed",
+                                record.id,
+                                record.organization,
+                            )
+                            await mark_request_failed(
+                                record.id,
+                                "Token no longer has access to page",
+                                record.retry_count,
+                            )
+                            if record.retry_count + 1 >= MAX_RETRY_COUNT:
+                                await notify_failure(
+                                    record.id,
+                                    "Token no longer has access to page",
+                                )
+                            continue
                 await _notify_and_complete(record.id)
                 retried += 1
             else:
                 logger.info("Connection not yet ready for %s; will retry next cycle", record.id)
         except Exception as e:
             logger.warning("Retry failed for %s: %s", record.id, e)
+            if include_comment_capabilities:
+                msg = str(e)
+                try:
+                    await _fail_request(
+                        record,
+                        msg,
+                        integration_name=record.integration_name,
+                        notify_now=_is_permission_denied(msg),
+                    )
+                except Exception as inner:
+                    logger.error("Failed to mark comment retry %s as failed: %s", record.id, inner)
     return retried
 
 

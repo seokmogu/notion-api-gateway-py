@@ -9,6 +9,7 @@ from notion_gateway.services.notion_records import (
     PROP_RETRY_COUNT,
     _checkbox_from_property,
     _text_from_property,
+    get_existing_token_for_page,
     get_pending_requests,
     mark_request_issued,
     parse_request_record,
@@ -207,3 +208,30 @@ class TestGetPendingRequests:
         records = await get_pending_requests(limit=10)
 
         assert [r.id for r in records] == ["legacy"]
+
+
+class TestGetExistingTokenForPage:
+    async def test_prefers_most_recent_completed_record(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        class FakeConfig:
+            notion_requests_database_id = "db-123"
+
+        async def fake_query_database(database_id: str, body: dict) -> dict:
+            captured["database_id"] = database_id
+            captured["body"] = body
+            return {"results": []}
+
+        monkeypatch.setattr("notion_gateway.services.notion_records.get_config", FakeConfig)
+        monkeypatch.setattr(
+            "notion_gateway.services.notion_records.query_database",
+            fake_query_database,
+        )
+
+        result = await get_existing_token_for_page("page-1")
+
+        assert result is None
+        assert captured["body"]["sorts"] == [
+            {"property": "처리 완료일시", "direction": "descending"},
+            {"property": "신청일자", "direction": "descending"},
+        ]
